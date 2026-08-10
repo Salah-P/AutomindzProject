@@ -1,4 +1,4 @@
-"""WeWorkRemotely scraper: RSS feed → title filter → detail-page descriptions."""
+"""WeWorkRemotely scraper: RSS feed → detail pages → query filter."""
 
 from __future__ import annotations
 
@@ -17,6 +17,13 @@ USER_AGENT = os.getenv(
     "AutomindzJobBot/0.1 (+https://automindz.local; job aggregator research)",
 )
 REQUEST_DELAY_SECONDS = float(os.getenv("SCRAPER_REQUEST_DELAY", "1.0"))
+
+# Prefer the real listing body over full-page text (nav/ads mention "AI Job Search", etc.).
+_DESCRIPTION_BLOCK = re.compile(
+    r'class="[^"]*lis-container__job__content__description[^"]*"[^>]*>(.*?)</div>\s*'
+    r'(?:<div|</section|</article)',
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class _TextExtractor(HTMLParser):
@@ -62,6 +69,15 @@ def _html_to_text(html: str) -> str:
     return parser.text().strip()
 
 
+def _detail_description(html: str) -> str:
+    """Extract job description text from a WWR detail page (not page chrome)."""
+    match = _DESCRIPTION_BLOCK.search(html)
+    if match:
+        return _html_to_text(match.group(1))
+    # Fallback: full visible text (last resort)
+    return _html_to_text(html)
+
+
 def _company_and_title(rss_title: str) -> tuple[str, str]:
     """WWR RSS titles are usually 'Company Name: Role Title'."""
     if ":" in rss_title:
@@ -72,13 +88,29 @@ def _company_and_title(rss_title: str) -> tuple[str, str]:
     return "Unknown", rss_title.strip()
 
 
-def _title_matches(query: str, title: str) -> bool:
-    """Case-insensitive match: all query tokens must appear in the title."""
-    tokens = [t for t in re.split(r"\s+", query.strip().lower()) if t]
-    if not tokens:
+def matches_query(job: dict[str, Any], query: str) -> bool:
+    """
+    True if ``query`` appears as a whole word/phrase in the job title or description.
+
+    Uses case-insensitive word-boundary matching so ``AI`` matches ``AI Engineer``
+    and ``built with AI``, but not substrings inside ``Airtable``, ``training``, etc.
+    """
+    q = (query or "").strip()
+    if not q:
         return True
-    haystack = title.lower()
-    return all(token in haystack for token in tokens)
+
+    # Escape regex metacharacters; allow flexible whitespace between query words.
+    pattern = re.compile(
+        r"\b" + re.escape(q).replace(r"\ ", r"\s+") + r"\b",
+        re.IGNORECASE,
+    )
+    haystack = "\n".join(
+        [
+            str(job.get("job_title") or ""),
+            str(job.get("job_description") or ""),
+        ]
+    )
+    return pattern.search(haystack) is not None
 
 
 def _parse_rss(rss_xml: str) -> list[dict[str, str]]:
@@ -105,7 +137,10 @@ def _parse_rss(rss_xml: str) -> list[dict[str, str]]:
 
 def scrape_jobs(query: str, *, limit: int | None = None) -> list[dict[str, Any]]:
     """
-    Scrape WeWorkRemotely programming jobs matching ``query`` in the RSS title.
+    Scrape WeWorkRemotely programming jobs matching ``query``.
+
+    Fetches RSS + per-job detail pages, then keeps jobs where ``matches_query``
+    finds the query as a whole word in the title or description.
 
     Returns dicts with: job_url, job_title, company_name, job_description.
     Does not write to the database.
@@ -113,33 +148,32 @@ def scrape_jobs(query: str, *, limit: int | None = None) -> list[dict[str, Any]]
     rss_xml = _fetch(RSS_URL)
     time.sleep(REQUEST_DELAY_SECONDS)
 
-    matched = [
-        item for item in _parse_rss(rss_xml) if _title_matches(query, item["rss_title"])
-    ]
+    items = _parse_rss(rss_xml)
     if limit is not None:
-        matched = matched[:limit]
+        items = items[:limit]
 
     jobs: list[dict[str, Any]] = []
-    for i, item in enumerate(matched):
-        description = item["rss_description"]
+    for i, item in enumerate(items):
+        # Start from RSS blurb (HTML); replace with scoped detail description when possible.
+        description = _html_to_text(item["rss_description"]) if item["rss_description"] else ""
         try:
             html = _fetch(item["job_url"])
-            detail = _html_to_text(html)
+            detail = _detail_description(html)
             if detail:
                 description = detail
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            # Keep RSS blurb if the detail page fails
             print(f"[warn] detail fetch failed for {item['job_url']}: {exc}", flush=True)
 
-        jobs.append(
-            {
-                "job_url": item["job_url"],
-                "job_title": item["job_title"],
-                "company_name": item["company_name"],
-                "job_description": description or item["job_title"],
-            }
-        )
-        if i < len(matched) - 1:
+        job = {
+            "job_url": item["job_url"],
+            "job_title": item["job_title"],
+            "company_name": item["company_name"],
+            "job_description": description or item["job_title"],
+        }
+        if matches_query(job, query):
+            jobs.append(job)
+
+        if i < len(items) - 1:
             time.sleep(REQUEST_DELAY_SECONDS)
 
     return jobs
