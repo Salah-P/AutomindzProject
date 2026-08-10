@@ -88,25 +88,46 @@ function stopPolling() {
 }
 
 async function fetchJobs(jobTitle, { refresh = false } = {}) {
-  const url = new URL("/v1/get-jobs", API_BASE);
-  url.searchParams.set("job_title", jobTitle);
-  if (refresh) url.searchParams.set("refresh", "true");
+  // Prefer /v1; fall back to /api/v1 if a proxy only exposes the /api prefix.
+  const paths = ["/v1/get-jobs", "/api/v1/get-jobs"];
+  let lastError = null;
 
-  const res = await fetch(url);
-  const text = await res.text();
-  let body = {};
-  try {
-    body = text ? JSON.parse(text) : {};
-  } catch {
-    body = { detail: text.slice(0, 300) };
+  for (const path of paths) {
+    const url = new URL(path, API_BASE);
+    url.searchParams.set("job_title", jobTitle);
+    if (refresh) url.searchParams.set("refresh", "true");
+
+    try {
+      const res = await fetch(url);
+      const text = await res.text();
+      let body = {};
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        body = { detail: text.slice(0, 300) };
+      }
+
+      if (res.status === 404 && path === paths[0]) {
+        lastError = new Error(`HTTP 404 at ${url.pathname}`);
+        continue;
+      }
+
+      if (!res.ok) {
+        const detail = body.detail || res.statusText || "Request failed";
+        const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        throw new Error(`HTTP ${res.status}: ${msg}`);
+      }
+      return body;
+    } catch (err) {
+      lastError = err;
+      if (path === paths[0] && String(err.message || err).includes("404")) {
+        continue;
+      }
+      throw err;
+    }
   }
 
-  if (!res.ok) {
-    const detail = body.detail || res.statusText || "Request failed";
-    const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
-    throw new Error(`HTTP ${res.status}: ${msg}`);
-  }
-  return body;
+  throw lastError || new Error("Request failed");
 }
 
 function startPolling(jobTitle) {

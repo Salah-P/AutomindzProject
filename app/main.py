@@ -25,7 +25,7 @@ from trigger_client import TriggerError, trigger_scrape_jobs  # noqa: E402
 PUBLIC_DIR = ROOT / "public"
 WEB_DIR = PUBLIC_DIR if PUBLIC_DIR.exists() else ROOT / "web"
 
-app = FastAPI(title="Automindz Jobs API", version="0.4.0")
+app = FastAPI(title="Automindz Jobs API", version="0.4.1")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -55,12 +55,26 @@ class GetJobsResponse(BaseModel):
     jobs: list[JobOut] = Field(default_factory=list)
 
 
+def _normalize_job(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "job_url": row["job_url"],
+        "job_title": row["job_title"],
+        "company_name": row["company_name"],
+        "job_description": row["job_description"],
+        "search_query": row["search_query"],
+        "scraped_at": str(row["scraped_at"]),
+    }
+
+
 @app.get("/health")
+@app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "env": os.getenv("VERCEL_ENV", "local")}
 
 
 @app.get("/v1/get-jobs", response_model=GetJobsResponse)
+@app.get("/api/v1/get-jobs", response_model=GetJobsResponse)
 def get_jobs(
     job_title: str = Query(..., min_length=1, description="Title filter / search query"),
     refresh: bool = Query(
@@ -74,6 +88,9 @@ def get_jobs(
     Cache hit: return immediately.
     Cache miss / refresh: trigger Trigger.dev (task upserts to Supabase) and
     return status=scraping so the client can poll. Fits Vercel Hobby 10s limit.
+
+    Both ``/v1/get-jobs`` and ``/api/v1/get-jobs`` are registered — some Vercel
+    setups surface the latter in request logs / proxies.
     """
     query = job_title.strip()
     if not query:
@@ -109,18 +126,6 @@ def get_jobs(
         message="Scrape started. Poll this endpoint until status is ready.",
         jobs=[JobOut(**_normalize_job(row)) for row in existing],
     )
-
-
-def _normalize_job(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": str(row["id"]),
-        "job_url": row["job_url"],
-        "job_title": row["job_title"],
-        "company_name": row["company_name"],
-        "job_description": row["job_description"],
-        "search_query": row["search_query"],
-        "scraped_at": str(row["scraped_at"]),
-    }
 
 
 @app.get("/")
