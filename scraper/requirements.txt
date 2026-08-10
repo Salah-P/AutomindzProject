@@ -1,0 +1,2 @@
+# Python 3.11+ — stdlib-only scraper for local / Trigger.dev subprocess use.
+# Add packages here when the scraper gains HTTP clients, parsers, or Supabase writes.

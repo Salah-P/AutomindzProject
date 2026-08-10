@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Automindz Jobs</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="brand">
+        <p class="logo">Automindz</p>
+        <h1>Remote programming jobs</h1>
+        <p class="lede">Search cached WeWorkRemotely listings, or trigger a fresh scrape.</p>
+      </header>
+
+      <form id="search-form" class="search">
+        <label for="search-query">Search query</label>
+        <div class="row">
+          <input
+            id="search-query"
+            name="search_query"
+            type="search"
+            placeholder="e.g. python backend"
+            required
+            autocomplete="off"
+          />
+          <button type="submit">Get jobs</button>
+        </div>
+        <label class="check">
+          <input id="force-refresh" type="checkbox" />
+          Force refresh (trigger scrape)
+        </label>
+      </form>
+
+      <p id="status" class="status" aria-live="polite"></p>
+      <section id="results" class="results" aria-live="polite"></section>
+    </main>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
