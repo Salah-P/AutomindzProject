@@ -103,6 +103,10 @@ async function fetchJobs(jobTitle, { refresh = false } = {}) {
 
 function startPolling(jobTitle) {
   stopPolling();
+  // Cap how long the UI waits for a scrape (Trigger task also has maxDuration).
+  const pollEveryMs = 3000;
+  const maxWaitMs = 90_000;
+  const maxTicks = Math.ceil(maxWaitMs / pollEveryMs);
   let ticks = 0;
   pollTimer = setInterval(async () => {
     ticks += 1;
@@ -114,8 +118,11 @@ function startPolling(jobTitle) {
         stopPolling();
         return;
       }
-      if (ticks >= 40) {
-        setStatus("Still scraping after ~2 minutes — check Trigger.dev dashboard.", true);
+      if (ticks >= maxTicks) {
+        setStatus(
+          "Still no results after 90s — the scrape may still be running in Trigger.dev, try searching again shortly.",
+          true,
+        );
         stopPolling();
         return;
       }
@@ -124,7 +131,7 @@ function startPolling(jobTitle) {
       setStatus(String(err.message || err), true);
       stopPolling();
     }
-  }, 3000);
+  }, pollEveryMs);
 }
 
 form.addEventListener("submit", async (event) => {
@@ -155,9 +162,7 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    setStatus(
-      `Scrape started${data.run_id ? ` (${data.run_id})` : ""}. Waiting for results…`,
-    );
+    setStatus("Scrape started. Waiting for results…");
     renderJobs(data.jobs || []);
     startPolling(jobTitle);
   } catch (err) {
