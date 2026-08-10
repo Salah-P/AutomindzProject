@@ -45,10 +45,12 @@ function shortDescription(text, maxLen = 220) {
   return `${cleaned.slice(0, maxLen - 1)}…`;
 }
 
-function renderJobs(jobs) {
+function renderJobs(jobs, { emptyMessage } = {}) {
   resultsEl.innerHTML = "";
   if (!jobs?.length) {
-    resultsEl.innerHTML = "<p class='meta'>No matching jobs found yet.</p>";
+    const message =
+      emptyMessage || "No matching jobs found for this search.";
+    resultsEl.innerHTML = `<p class="meta">${escapeHtml(message)}</p>`;
     return;
   }
 
@@ -147,15 +149,29 @@ function startPolling(jobTitle) {
         stopPolling();
         return;
       }
+      if (data.status === "ready" && !data.jobs?.length) {
+        setStatus(`No matching jobs for “${jobTitle}”.`);
+        renderJobs([], {
+          emptyMessage: "No matching jobs found for this search.",
+        });
+        stopPolling();
+        return;
+      }
       if (ticks >= maxTicks) {
         setStatus(
-          "Still no results after 90s — the scrape may still be running in Trigger.dev, try searching again shortly.",
+          "Still no results after 90s — the scrape may still be running, try searching again shortly.",
           true,
         );
+        renderJobs([], {
+          emptyMessage: "Still searching — try again in a moment if nothing shows up.",
+        });
         stopPolling();
         return;
       }
       setStatus(`Scraping via Trigger.dev… (${ticks * 3}s)`);
+      renderJobs([], {
+        emptyMessage: "Still searching — this can take a short while.",
+      });
     } catch (err) {
       setStatus(String(err.message || err), true);
       stopPolling();
@@ -192,7 +208,9 @@ form.addEventListener("submit", async (event) => {
     }
 
     setStatus("Scrape started. Waiting for results…");
-    renderJobs(data.jobs || []);
+    renderJobs(data.jobs || [], {
+      emptyMessage: "Still searching — this can take a short while.",
+    });
     startPolling(jobTitle);
   } catch (err) {
     setStatus(String(err.message || err), true);
