@@ -11,26 +11,22 @@
       <header class="brand">
         <p class="logo">Automindz</p>
         <h1>Remote programming jobs</h1>
-        <p class="lede">Search cached WeWorkRemotely listings, or trigger a fresh scrape.</p>
+        <p class="lede">Search WeWorkRemotely by job title.</p>
       </header>
 
       <form id="search-form" class="search">
-        <label for="search-query">Search query</label>
+        <label for="job-title">Job title</label>
         <div class="row">
           <input
-            id="search-query"
-            name="search_query"
+            id="job-title"
+            name="job_title"
             type="search"
-            placeholder="e.g. python backend"
+            placeholder="e.g. python"
             required
             autocomplete="off"
           />
-          <button type="submit">Get jobs</button>
+          <button type="submit">Search</button>
         </div>
-        <label class="check">
-          <input id="force-refresh" type="checkbox" />
-          Force refresh (trigger scrape)
-        </label>
       </form>
 
       <p id="status" class="status" aria-live="polite"></p>

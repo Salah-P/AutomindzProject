@@ -36,14 +36,46 @@ RSS: `https://weworkremotely.com/categories/remote-programming-jobs.rss`
 - `search_query` — label for the run / user query (indexed)
 - `scraped_at` — default `now()`
 
-## Request flow (happy path)
+## Request flow (current)
 
-1. Browser `POST /v1/get-jobs` with `{ "search_query": "..." }`.
-2. API selects existing rows for that `search_query`.
-3. If rows exist and `force_refresh` is false → `status: ready` + jobs.
-4. Else API triggers Trigger.dev task `scrape-weworkremotely`.
-5. Task runs `python scraper/wwr.py --search-query ... --json`, upserts jobs on `job_url`.
-6. Website polls `GET /v1/get-jobs?search_query=...` until rows appear.
+1. Browser `GET /v1/get-jobs?job_title=...`
+2. FastAPI `trigger_client.trigger_and_wait_scrape_jobs()` → Trigger.dev REST trigger + poll.
+3. Local/cloud worker runs task `scrape-jobs` (`trigger/src/scrapeJobsTask.ts`).
+4. Task spawns `python scraper/run.py "<job_title>"`, returns JSON jobs as the run output.
+5. FastAPI upserts to Supabase and returns rows to the browser.
+
+### Trigger.dev local
+
+```bash
+cd trigger
+npm install
+# ensure trigger/.env has TRIGGER_SECRET_KEY + AUTOMINDZ_ROOT
+npm run dev
+```
+
+In another terminal:
+
+```bash
+cd api
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+### Trigger.dev cloud runner needs (for deploy)
+
+In `trigger/trigger.config.ts` we already configure `@trigger.dev/python` `pythonExtension`:
+
+- Installs Python in the build image
+- Bundles `../scraper/**/*.py` into the deploy artifact
+- Installs `../scraper/requirements.txt` (stdlib-only today)
+
+Dashboard / deploy checklist:
+
+1. Project ref `proj_dvfflvatqctdhlkzxcbx` in `trigger.config.ts`
+2. Set env vars in Trigger.dev dashboard (prod/staging): none required for the scraper itself (stdlib + public RSS). Optional: `SCRAPER_USER_AGENT`, `SCRAPER_REQUEST_DELAY`
+3. Run `cd trigger && npm run deploy`
+4. Use a **prod** secret key (`tr_prod_…`) in the API’s `TRIGGER_SECRET_KEY` when pointing at deployed tasks
+
+Local Windows note: worker uses `PYTHON_BIN=python` (see `trigger/.env`) because `python3` is often missing on Windows. Linux/macOS/cloud default to `python3`.
 
 ## Local run commands
 
@@ -73,19 +105,21 @@ python scraper/persist_demo.py "python" --limit 5 --runs 2
 
 Scraper itself is stdlib-only (Python 3.11+). Persistence uses `supabase` from `api/requirements.txt`.
 
-### FastAPI
+### FastAPI (+ web UI)
+
+Serves the API and `web/` on one port:
 
 ```bash
 cd api
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
+- UI: `http://127.0.0.1:8000/`
+- Jobs: `GET http://127.0.0.1:8000/v1/get-jobs?job_title=python`
 - Health: `GET http://127.0.0.1:8000/health`
-- Docs: `http://127.0.0.1:8000/docs`
+
+`GET /v1/get-jobs` scrapes WeWorkRemotely directly (no Trigger.dev yet), upserts to Supabase, and returns rows.
 
 ### Trigger.dev
 

@@ -1,43 +1,36 @@
-"""FastAPI gateway: website ↔ Trigger.dev ↔ Supabase."""
+"""FastAPI: Trigger.dev scrape → Supabase → web UI."""
 
 from __future__ import annotations
 
-import os
+import sys
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
 
-import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from supabase_client import get_jobs_by_query
-
-_root = Path(__file__).resolve().parents[1]
-load_dotenv(_root / ".env")
+ROOT = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
-app = FastAPI(title="Automindz Jobs API", version="0.1.0")
+sys.path.insert(0, str(ROOT / "api"))
 
-_cors = [o.strip() for o in os.getenv("CORS_ORIGINS", "*").split(",") if o.strip()]
+from supabase_client import get_jobs_by_query, upsert_jobs  # noqa: E402
+from trigger_client import TriggerError, trigger_and_wait_scrape_jobs  # noqa: E402
+
+WEB_DIR = ROOT / "web"
+
+app = FastAPI(title="Automindz Jobs API", version="0.3.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors if _cors != ["*"] else ["*"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-class GetJobsRequest(BaseModel):
-    search_query: str = Field(..., min_length=1, description="Query / label for this scrape run")
-    limit: int | None = Field(None, ge=1, le=100, description="Optional max jobs for the scrape")
-    force_refresh: bool = Field(
-        False,
-        description="If true, trigger a new scrape even when cached rows exist",
-    )
 
 
 class JobOut(BaseModel):
@@ -51,37 +44,9 @@ class JobOut(BaseModel):
 
 
 class GetJobsResponse(BaseModel):
-    status: str
-    search_query: str
-    run_id: str | None = None
+    job_title: str
+    count: int
     jobs: list[JobOut] = Field(default_factory=list)
-    message: str | None = None
-
-
-async def trigger_scrape(search_query: str, limit: int | None) -> str:
-    """Kick off the Trigger.dev scrape task. Returns a run id when available."""
-    secret = os.getenv("TRIGGER_SECRET_KEY")
-    task_id = os.getenv("TRIGGER_SCRAPE_TASK_ID", "scrape-weworkremotely")
-    if not secret:
-        # Local-dev fallback: no Trigger.dev configured yet
-        return f"local-{uuid4()}"
-
-    # Trigger.dev REST trigger (v3). Adjust path if your project uses a custom endpoint.
-    url = f"https://api.trigger.dev/api/v1/tasks/{task_id}/trigger"
-    payload: dict[str, Any] = {"payload": {"search_query": search_query, "limit": limit}}
-    headers = {
-        "Authorization": f"Bearer {secret}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        if resp.status_code >= 400:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Trigger.dev error ({resp.status_code}): {resp.text}",
-            )
-        data = resp.json()
-        return str(data.get("id") or data.get("runId") or uuid4())
 
 
 @app.get("/health")
@@ -89,48 +54,33 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/v1/get-jobs", response_model=GetJobsResponse)
-async def get_jobs(body: GetJobsRequest) -> GetJobsResponse:
-    """
-    Return jobs for a search_query from Supabase.
-    If none exist (or force_refresh), trigger a scrape via Trigger.dev.
-    """
-    try:
-        existing = get_jobs_by_query(body.search_query)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    if existing and not body.force_refresh:
-        return GetJobsResponse(
-            status="ready",
-            search_query=body.search_query,
-            jobs=[JobOut(**_normalize_job(row)) for row in existing],
-        )
-
-    run_id = await trigger_scrape(body.search_query, body.limit)
-    # After triggering, return whatever is already in DB (may be empty / stale on refresh).
-    return GetJobsResponse(
-        status="scraping" if not existing else "refreshing",
-        search_query=body.search_query,
-        run_id=run_id,
-        jobs=[JobOut(**_normalize_job(row)) for row in existing],
-        message="Scrape triggered. Poll GET /v1/get-jobs or POST again without force_refresh.",
-    )
-
-
 @app.get("/v1/get-jobs", response_model=GetJobsResponse)
-def get_jobs_poll(
-    search_query: str = Query(..., min_length=1),
+def get_jobs(
+    job_title: str = Query(..., min_length=1, description="Title filter / search query"),
 ) -> GetJobsResponse:
-    """Poll cached jobs for a search_query (no trigger)."""
+    """Trigger Trigger.dev scrape-jobs, upsert to Supabase, return rows."""
+    query = job_title.strip()
+    if not query:
+        raise HTTPException(status_code=422, detail="job_title must not be empty")
+
     try:
-        existing = get_jobs_by_query(search_query)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        scraped = trigger_and_wait_scrape_jobs(query)
+    except TriggerError as exc:
+        raise HTTPException(status_code=502, detail=f"Scraper failed: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Scraper failed: {exc}") from exc
+
+    try:
+        if scraped:
+            upsert_jobs(scraped, search_query=query)
+        rows = get_jobs_by_query(query)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Database error: {exc}") from exc
+
     return GetJobsResponse(
-        status="ready" if existing else "empty",
-        search_query=search_query,
-        jobs=[JobOut(**_normalize_job(row)) for row in existing],
+        job_title=query,
+        count=len(rows),
+        jobs=[JobOut(**_normalize_job(row)) for row in rows],
     )
 
 
@@ -144,3 +94,18 @@ def _normalize_job(row: dict[str, Any]) -> dict[str, Any]:
         "search_query": row["search_query"],
         "scraped_at": str(row["scraped_at"]),
     }
+
+
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(WEB_DIR / "index.html")
+
+
+@app.get("/styles.css")
+def styles() -> FileResponse:
+    return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def app_js() -> FileResponse:
+    return FileResponse(WEB_DIR / "app.js", media_type="application/javascript")

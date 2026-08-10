@@ -3,12 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npx trigger.dev@latest dev",
-    "deploy": "npx trigger.dev@latest deploy"
+    "dev": "npx trigger.dev@4.5.10 dev",
+    "deploy": "npx trigger.dev@4.5.10 deploy"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "@trigger.dev/sdk": "^3.3.17"
+    "@trigger.dev/python": "4.5.10",
+    "@trigger.dev/sdk": "4.5.10"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
