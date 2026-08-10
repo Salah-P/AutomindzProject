@@ -1,19 +1,27 @@
-// Prefer same-origin. Ignore stale localStorage API_BASE pointing at localhost.
+// Always same-origin in the browser unless API_BASE is an explicit non-localhost override
+// used only for local static hosting against a remote API.
 function resolveApiBase() {
+  const origin = window.location.origin;
+  const host = window.location.hostname;
+  const onVercel = host.endsWith(".vercel.app");
   const stored = localStorage.getItem("API_BASE");
-  if (!stored) return window.location.origin;
+
+  // Production / preview on Vercel must never call a stale API_BASE (common cause of NOT_FOUND).
+  if (onVercel) {
+    if (stored) localStorage.removeItem("API_BASE");
+    return origin;
+  }
+
+  if (!stored) return origin;
   try {
     const u = new URL(stored);
     if (u.hostname === "127.0.0.1" || u.hostname === "localhost") {
-      if (window.location.hostname !== "127.0.0.1" && window.location.hostname !== "localhost") {
-        localStorage.removeItem("API_BASE");
-        return window.location.origin;
-      }
+      return stored.replace(/\/$/, "");
     }
     return stored.replace(/\/$/, "");
   } catch {
     localStorage.removeItem("API_BASE");
-    return window.location.origin;
+    return origin;
   }
 }
 
