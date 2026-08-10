@@ -23,7 +23,9 @@ RSS: `https://weworkremotely.com/categories/remote-programming-jobs.rss`
 | Website UI | `web/` | Static HTML/CSS/JS. Calls FastAPI. Polls while status is `scraping` / `refreshing`. |
 | HTTP API | `api/` | FastAPI. `POST/GET /v1/get-jobs`. Reads Supabase; triggers scrape when cache miss or `force_refresh`. |
 | Async scrape orchestration | `trigger/` | Trigger.dev v3 task `scrape-weworkremotely`. Spawns Python scraper, upserts to Supabase. |
-| Scraper | `scraper/wwr.py` | Stdlib Python. RSS parse → detail fetch → JSON to stdout (`--json`). |
+| Scraper | `scraper/wwr_scraper.py` | `scrape_jobs(query)` — RSS → title filter → detail fetch. |
+| Scraper CLI | `scraper/run.py` | Prints JSON array to stdout (Trigger.dev subprocess). |
+| Supabase helpers | `api/supabase_client.py` | `upsert_jobs()` (dedup `job_url`), `get_jobs_by_query()`. |
 | DB schema | `supabase/schema.sql` | Source of truth for `jobs` (dedup on `job_url`). |
 | Env template | `.env.example` | Copy to repo-root `.env`. |
 
@@ -61,11 +63,15 @@ No local Supabase CLI required for day-to-day work.
 ### Scraper (standalone)
 
 ```bash
-python scraper/wwr.py --search-query "python backend" --limit 3
-python scraper/wwr.py --search-query "python backend" --limit 3 --json
+# JSON to stdout (what Trigger.dev will call)
+python scraper/run.py "python" --limit 3
+
+# Scrape + upsert twice against Supabase (dedup proof)
+# requires repo-root .env with SUPABASE_* and: pip install -r api/requirements.txt
+python scraper/persist_demo.py "python" --limit 5 --runs 2
 ```
 
-No pip packages required (stdlib only). Use Python 3.11+.
+Scraper itself is stdlib-only (Python 3.11+). Persistence uses `supabase` from `api/requirements.txt`.
 
 ### FastAPI
 

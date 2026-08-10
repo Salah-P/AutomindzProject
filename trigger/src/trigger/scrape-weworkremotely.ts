@@ -14,7 +14,6 @@ export type ScrapedJob = {
   job_title: string;
   company_name: string;
   job_description: string;
-  search_query: string;
 };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -22,8 +21,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 
 function runScraper(searchQuery: string, limit?: number | null): Promise<ScrapedJob[]> {
-  const script = path.join(REPO_ROOT, "scraper", "wwr.py");
-  const args = [script, "--search-query", searchQuery, "--json"];
+  const script = path.join(REPO_ROOT, "scraper", "run.py");
+  const args = [script, searchQuery];
   if (limit != null) {
     args.push("--limit", String(limit));
   }
@@ -83,7 +82,7 @@ export const scrapeWeworkremotely = task({
         job_title: j.job_title,
         company_name: j.company_name,
         job_description: j.job_description,
-        search_query: j.search_query,
+        search_query,
       })),
       { onConflict: "job_url", count: "exact" },
     );

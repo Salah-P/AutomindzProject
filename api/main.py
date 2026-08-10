@@ -12,7 +12,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from supabase import Client, create_client
+
+from supabase_client import get_jobs_by_query
 
 _root = Path(__file__).resolve().parents[1]
 load_dotenv(_root / ".env")
@@ -57,28 +58,6 @@ class GetJobsResponse(BaseModel):
     message: str | None = None
 
 
-def get_supabase() -> Client:
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    if not url or not key:
-        raise HTTPException(
-            status_code=500,
-            detail="SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set",
-        )
-    return create_client(url, key)
-
-
-def fetch_jobs_for_query(sb: Client, search_query: str) -> list[dict[str, Any]]:
-    result = (
-        sb.table("jobs")
-        .select("*")
-        .eq("search_query", search_query)
-        .order("scraped_at", desc=True)
-        .execute()
-    )
-    return list(result.data or [])
-
-
 async def trigger_scrape(search_query: str, limit: int | None) -> str:
     """Kick off the Trigger.dev scrape task. Returns a run id when available."""
     secret = os.getenv("TRIGGER_SECRET_KEY")
@@ -116,8 +95,10 @@ async def get_jobs(body: GetJobsRequest) -> GetJobsResponse:
     Return jobs for a search_query from Supabase.
     If none exist (or force_refresh), trigger a scrape via Trigger.dev.
     """
-    sb = get_supabase()
-    existing = fetch_jobs_for_query(sb, body.search_query)
+    try:
+        existing = get_jobs_by_query(body.search_query)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     if existing and not body.force_refresh:
         return GetJobsResponse(
@@ -142,8 +123,10 @@ def get_jobs_poll(
     search_query: str = Query(..., min_length=1),
 ) -> GetJobsResponse:
     """Poll cached jobs for a search_query (no trigger)."""
-    sb = get_supabase()
-    existing = fetch_jobs_for_query(sb, search_query)
+    try:
+        existing = get_jobs_by_query(search_query)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return GetJobsResponse(
         status="ready" if existing else "empty",
         search_query=search_query,

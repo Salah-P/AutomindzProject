@@ -55,7 +55,10 @@ Open http://127.0.0.1:5173 and submit a search query. Use **Force refresh** to t
 ### Scraper only
 
 ```bash
-python scraper/wwr.py --search-query "python" --limit 5
+python scraper/run.py "python" --limit 5
+
+# scrape + upsert to Supabase (needs .env)
+python scraper/persist_demo.py "python" --limit 5 --runs 2
 ```
 
 ## API surface
