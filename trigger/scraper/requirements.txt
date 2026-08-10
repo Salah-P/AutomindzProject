@@ -1,0 +1,1 @@
+# Stdlib-only scraper. Keep this file so Trigger.dev pythonExtension can install deps later.

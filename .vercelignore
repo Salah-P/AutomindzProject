@@ -1,0 +1,11 @@
+trigger/node_modules
+trigger/.trigger
+**/__pycache__
+.git
+.env
+.env.*
+!.env.example
+*.pyc
+.venv
+api/
+api/**

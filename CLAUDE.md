@@ -60,22 +60,23 @@ cd api
 uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-### Trigger.dev cloud runner needs (for deploy)
+### Deploy notes
 
-In `trigger/trigger.config.ts` we already configure `@trigger.dev/python` `pythonExtension`:
+**Trigger.dev cloud**
+- Task id: `scrape-jobs`
+- Deploy from a filesystem path **without spaces** (Windows path `Automindz project` breaks the cloud indexer). Copy `trigger/` elsewhere or rename the repo folder, then:
+  ```bash
+  cd <path-without-spaces>/trigger
+  npm install
+  npx trigger.dev@4.5.10 deploy
+  ```
+- Production needs the **prod** secret key (`tr_prod_…`) in Vercel, not `tr_dev_…`.
+- Dashboard env (optional): `SCRAPER_REQUEST_DELAY=0.25`, `SCRAPER_USER_AGENT=…`
 
-- Installs Python in the build image
-- Bundles `../scraper/**/*.py` into the deploy artifact
-- Installs `../scraper/requirements.txt` (stdlib-only today)
-
-Dashboard / deploy checklist:
-
-1. Project ref `proj_dvfflvatqctdhlkzxcbx` in `trigger.config.ts`
-2. Set env vars in Trigger.dev dashboard (prod/staging): none required for the scraper itself (stdlib + public RSS). Optional: `SCRAPER_USER_AGENT`, `SCRAPER_REQUEST_DELAY`
-3. Run `cd trigger && npm run deploy`
-4. Use a **prod** secret key (`tr_prod_…`) in the API’s `TRIGGER_SECRET_KEY` when pointing at deployed tasks
-
-Local Windows note: worker uses `PYTHON_BIN=python` (see `trigger/.env`) because `python3` is often missing on Windows. Linux/macOS/cloud default to `python3`.
+**Vercel (Hobby)**
+- Root `requirements.txt` + `api/index.py` (exports `app`) + `web/` static via FastAPI.
+- `vercel.json` sets `maxDuration: 10` (Hobby limit).
+- Default `/v1/get-jobs` returns Supabase cache when present; `?refresh=true` forces Trigger scrape (may timeout on Hobby if the scrape exceeds 10s).
 
 ## Local run commands
 
@@ -107,19 +108,19 @@ Scraper itself is stdlib-only (Python 3.11+). Persistence uses `supabase` from `
 
 ### FastAPI (+ web UI)
 
-Serves the API and `web/` on one port:
+Local (from repo root):
 
 ```bash
-cd api
 pip install -r requirements.txt
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-- UI: `http://127.0.0.1:8000/`
-- Jobs: `GET http://127.0.0.1:8000/v1/get-jobs?job_title=python`
-- Health: `GET http://127.0.0.1:8000/health`
+Production: https://automindz-jobs.vercel.app
 
-`GET /v1/get-jobs` scrapes WeWorkRemotely directly (no Trigger.dev yet), upserts to Supabase, and returns rows.
+- UI: `/`
+- Jobs: `GET /v1/get-jobs?job_title=python` (cached when rows exist)
+- Force scrape: `GET /v1/get-jobs?job_title=python&refresh=true` (needs Trigger cloud; may exceed Hobby 10s)
+- Health: `GET /health`
 
 ### Trigger.dev
 
