@@ -16,7 +16,10 @@ export type ScrapedJob = {
 };
 
 function resolveRepoRoot(): string | null {
-  if (process.env.AUTOMINDZ_ROOT && existsSync(path.join(process.env.AUTOMINDZ_ROOT, "scraper", "run.py"))) {
+  if (
+    process.env.AUTOMINDZ_ROOT &&
+    existsSync(path.join(process.env.AUTOMINDZ_ROOT, "scraper", "run.py"))
+  ) {
     return path.resolve(process.env.AUTOMINDZ_ROOT);
   }
 
@@ -38,7 +41,6 @@ function pythonCommand(): string {
 }
 
 async function runScraperViaPythonExtension(jobTitle: string): Promise<ScrapedJob[]> {
-  // Uses bundled scripts from pythonExtension (cloud + local when packaged).
   const result = await python.runScript("scraper/run.py", [jobTitle]);
   if (result.stderr) {
     logger.warn("scraper stderr", { stderr: result.stderr.slice(0, 1000) });
@@ -103,7 +105,6 @@ function runScraperViaSpawn(jobTitle: string, repoRoot: string): Promise<Scraped
 }
 
 async function runScraper(jobTitle: string): Promise<ScrapedJob[]> {
-  // Cloud / bundled first (pythonExtension). Fall back to local monorepo spawn.
   try {
     return await runScraperViaPythonExtension(jobTitle);
   } catch (err) {
@@ -118,9 +119,50 @@ async function runScraper(jobTitle: string): Promise<ScrapedJob[]> {
   }
 }
 
+async function upsertJobs(jobs: ScrapedJob[], searchQuery: string): Promise<number> {
+  // Use PostgREST directly — supabase-js pulls in realtime/WebSocket which breaks on Trigger runners.
+  const baseUrl = process.env.SUPABASE_URL;
+  const key =
+    process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!baseUrl || !key) {
+    throw new Error(
+      "SUPABASE_URL and SUPABASE_SECRET_KEY must be set on the Trigger.dev environment",
+    );
+  }
+  if (!jobs.length) return 0;
+
+  const rows = jobs.map((j) => ({
+    job_url: j.job_url,
+    job_title: j.job_title,
+    company_name: j.company_name,
+    job_description: j.job_description,
+    search_query: searchQuery,
+  }));
+
+  const resp = await fetch(`${baseUrl.replace(/\/$/, "")}/rest/v1/jobs?on_conflict=job_url`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=representation",
+    },
+    body: JSON.stringify(rows),
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Supabase upsert failed (${resp.status}): ${text}`);
+  }
+
+  const data = (await resp.json()) as unknown;
+  return Array.isArray(data) ? data.length : rows.length;
+}
+
 export const scrapeJobsTask = task({
   id: "scrape-jobs",
-  maxDuration: 600,
+  // Hard cap per run — WWR RSS + a few detail pages should finish well under this.
+  maxDuration: 180,
   retry: {
     maxAttempts: 2,
   },
@@ -132,7 +174,8 @@ export const scrapeJobsTask = task({
 
     logger.info("scrape-jobs starting", { jobTitle });
     const jobs = await runScraper(jobTitle);
-    logger.info("scrape-jobs finished", { count: jobs.length });
-    return jobs;
+    const upserted = await upsertJobs(jobs, jobTitle);
+    logger.info("scrape-jobs finished", { count: jobs.length, upserted });
+    return { jobs, upserted };
   },
 });

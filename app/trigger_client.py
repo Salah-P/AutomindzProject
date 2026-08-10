@@ -1,4 +1,4 @@
-"""Trigger.dev client: trigger scrape-jobs and wait for the run output."""
+"""Trigger.dev client: trigger scrape-jobs (optionally wait)."""
 
 from __future__ import annotations
 
@@ -90,9 +90,9 @@ def wait_for_run(
 
 def trigger_and_wait_scrape_jobs(job_title: str) -> list[dict[str, Any]]:
     """
-    Trigger scrape-jobs and wait for completion (sync from the caller's POV).
+    Trigger scrape-jobs and wait for completion.
 
-    Returns the list of scraped job dicts from the task output.
+    Returns the jobs list from the task output (task also upserts to Supabase).
     """
     run_id = trigger_scrape_jobs(job_title)
     run = wait_for_run(run_id)
@@ -109,6 +109,10 @@ def trigger_and_wait_scrape_jobs(job_title: str) -> list[dict[str, Any]]:
     output = run.get("output")
     if output is None:
         raise TriggerError(f"Run {run_id} completed but output is missing")
-    if not isinstance(output, list):
-        raise TriggerError(f"Run {run_id} output is not a list: {type(output)}")
-    return output
+
+    # New task shape: { jobs, upserted }; keep compat with bare list.
+    if isinstance(output, list):
+        return output
+    if isinstance(output, dict) and isinstance(output.get("jobs"), list):
+        return output["jobs"]
+    raise TriggerError(f"Run {run_id} output has unexpected shape: {type(output)}")

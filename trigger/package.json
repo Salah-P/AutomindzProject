@@ -7,6 +7,7 @@
     "deploy": "npx trigger.dev@4.5.10 deploy"
   },
   "dependencies": {
+    "@trigger.dev/build": "4.5.10",
     "@trigger.dev/python": "4.5.10",
     "@trigger.dev/sdk": "4.5.10"
   },

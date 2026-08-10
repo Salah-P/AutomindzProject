@@ -17,15 +17,15 @@ ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / ".env")
 load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
-sys.path.insert(0, str(ROOT / "api"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from supabase_client import get_jobs_by_query, upsert_jobs  # noqa: E402
-from trigger_client import TriggerError, trigger_and_wait_scrape_jobs  # noqa: E402
+from supabase_client import get_jobs_by_query  # noqa: E402
+from trigger_client import TriggerError, trigger_scrape_jobs  # noqa: E402
 
-WEB_DIR = ROOT / "web"
+PUBLIC_DIR = ROOT / "public"
+WEB_DIR = PUBLIC_DIR if PUBLIC_DIR.exists() else ROOT / "web"
 
-app = FastAPI(title="Automindz Jobs API", version="0.3.0")
+app = FastAPI(title="Automindz Jobs API", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -48,7 +48,10 @@ class JobOut(BaseModel):
 class GetJobsResponse(BaseModel):
     job_title: str
     count: int
+    status: str = "ready"  # ready | scraping
     cached: bool = False
+    run_id: str | None = None
+    message: str | None = None
     jobs: list[JobOut] = Field(default_factory=list)
 
 
@@ -62,14 +65,15 @@ def get_jobs(
     job_title: str = Query(..., min_length=1, description="Title filter / search query"),
     refresh: bool = Query(
         False,
-        description="If true, force a Trigger.dev scrape even when cached rows exist",
+        description="If true, kick a new Trigger.dev scrape even when cache exists",
     ),
 ) -> GetJobsResponse:
     """
     Return jobs for job_title.
 
-    Default: return Supabase cache when present (fits Vercel Hobby 10s limit).
-    refresh=true (or empty cache): Trigger.dev scrape-and-wait, then upsert.
+    Cache hit: return immediately.
+    Cache miss / refresh: trigger Trigger.dev (task upserts to Supabase) and
+    return status=scraping so the client can poll. Fits Vercel Hobby 10s limit.
     """
     query = job_title.strip()
     if not query:
@@ -84,29 +88,26 @@ def get_jobs(
         return GetJobsResponse(
             job_title=query,
             count=len(existing),
+            status="ready",
             cached=True,
             jobs=[JobOut(**_normalize_job(row)) for row in existing],
         )
 
     try:
-        scraped = trigger_and_wait_scrape_jobs(query)
+        run_id = trigger_scrape_jobs(query)
     except TriggerError as exc:
         raise HTTPException(status_code=502, detail=f"Scraper failed: {exc}") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Scraper failed: {exc}") from exc
 
-    try:
-        if scraped:
-            upsert_jobs(scraped, search_query=query)
-        rows = get_jobs_by_query(query)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Database error: {exc}") from exc
-
     return GetJobsResponse(
         job_title=query,
-        count=len(rows),
+        count=len(existing),
+        status="scraping",
         cached=False,
-        jobs=[JobOut(**_normalize_job(row)) for row in rows],
+        run_id=run_id,
+        message="Scrape started. Poll this endpoint until status is ready.",
+        jobs=[JobOut(**_normalize_job(row)) for row in existing],
     )
 
 
