@@ -1,0 +1,3 @@
+# Stdlib-only scraper for Trigger.dev (pythonExtension).
+# Keep this file at the repo root — nested paths break the generated Containerfile
+# (COPY flattens the file, but pip still looks under ./trigger/...).

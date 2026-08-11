@@ -55,7 +55,7 @@ export default defineConfig({
   build: {
     extensions: [
       pythonExtension({
-        requirementsFile: "./trigger/requirements.txt",
+        requirementsFile: "./trigger.python.requirements.txt",
         scripts: ["./trigger/scraper/**/*.py"],
       }),
       syncEnvVars(async () => {
