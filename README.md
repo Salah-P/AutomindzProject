@@ -150,17 +150,14 @@ npx trigger.dev@4.5.10 deploy --env-file .env
 
 ### Trigger.dev + GitHub
 
-The repo includes `.github/workflows/deploy-trigger.yml`, which deploys from `trigger/` on push to `main`.
+GitHub App auto-deploy expects config at the **repo root**. This repo has:
 
-1. Create a Trigger personal access token: https://cloud.trigger.dev/account/tokens  
-2. Add GitHub repo secrets: `TRIGGER_ACCESS_TOKEN`, and preferably `SUPABASE_URL` + `SUPABASE_SECRET_KEY` (for build-time `syncEnvVars`).
+- `trigger.config.ts` (paths into `trigger/`)
+- root `package.json` (so `npm install` works after clone)
 
-If you also use Trigger’s **GitHub App** auto-deploy, open the project’s Git settings and set:
+That matches the failed Deploys you saw (“clone succeeds, then build fails”) — those happened when only `trigger/trigger.config.ts` existed.
 
-- **Trigger config file:** `trigger/trigger.config.ts`
-- **Install command:** `cd trigger && npm install`
-
-Otherwise the App looks at the repo root, fails in a few seconds, and shows a red check on GitHub. You can disconnect the App and rely on the Actions workflow above.
+Optional: `.github/workflows/deploy-trigger.yml` also deploys from root. Add repo secret `TRIGGER_ACCESS_TOKEN` (https://cloud.trigger.dev/account/tokens), plus `SUPABASE_URL` / `SUPABASE_SECRET_KEY` if you want env sync at build time. Use either the GitHub App **or** the Action to avoid double deploys.
 
 ---
 

@@ -41,15 +41,33 @@ function pythonCommand(): string {
 }
 
 async function runScraperViaPythonExtension(jobTitle: string): Promise<ScrapedJob[]> {
-  const result = await python.runScript("scraper/run.py", [jobTitle]);
-  if (result.stderr) {
-    logger.warn("scraper stderr", { stderr: result.stderr.slice(0, 1000) });
+  // Root GitHub deploy bundles `trigger/scraper/**`; local `cd trigger` bundles `scraper/**`.
+  const candidates = ["scraper/run.py", "trigger/scraper/run.py"];
+  let lastError: unknown;
+
+  for (const script of candidates) {
+    try {
+      const result = await python.runScript(script, [jobTitle]);
+      if (result.stderr) {
+        logger.warn("scraper stderr", { script, stderr: result.stderr.slice(0, 1000) });
+      }
+      const parsed = JSON.parse(result.stdout) as ScrapedJob[];
+      if (!Array.isArray(parsed)) {
+        throw new Error("scraper stdout was not a JSON array");
+      }
+      return parsed;
+    } catch (err) {
+      lastError = err;
+      logger.warn("python.runScript candidate failed", {
+        script,
+        error: String(err),
+      });
+    }
   }
-  const parsed = JSON.parse(result.stdout) as ScrapedJob[];
-  if (!Array.isArray(parsed)) {
-    throw new Error("scraper stdout was not a JSON array");
-  }
-  return parsed;
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`python.runScript failed for ${candidates.join(", ")}`);
 }
 
 function runScraperViaSpawn(jobTitle: string, repoRoot: string): Promise<ScrapedJob[]> {

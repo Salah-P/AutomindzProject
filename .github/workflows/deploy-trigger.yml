@@ -1,14 +1,12 @@
-# Deploys Trigger.dev tasks from trigger/ (monorepo-aware).
+# Deploys Trigger.dev from the repo root (trigger.config.ts).
 # Requires repo secret: TRIGGER_ACCESS_TOKEN
 #   https://cloud.trigger.dev/account/tokens
 #
-# Optional secrets used at build time for syncEnvVars in trigger.config.ts:
+# Optional secrets for syncEnvVars during deploy:
 #   SUPABASE_URL, SUPABASE_SECRET_KEY
 #
-# If you also use Trigger.dev's GitHub App auto-deploy, set its
-# "Trigger config file" to trigger/trigger.config.ts and
-# "Install command" to: cd trigger && npm install
-# — or disconnect the App to avoid duplicate deploys.
+# Trigger.dev GitHub App can also deploy using the root trigger.config.ts.
+# Prefer one or the other to avoid duplicate deploys.
 
 name: Deploy Trigger.dev (prod)
 
@@ -18,15 +16,15 @@ on:
       - main
     paths:
       - "trigger/**"
+      - "trigger.config.ts"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-trigger.yml"
   workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: trigger
     steps:
       - uses: actions/checkout@v4
 
