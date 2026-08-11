@@ -117,7 +117,14 @@ async function fetchJobs(jobTitle, { refresh = false, poll = false } = {}) {
 
       if (!res.ok) {
         const detail = body.detail || res.statusText || "Request failed";
-        const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        let msg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        if (
+          res.status === 404 &&
+          (String(msg).includes("NOT_FOUND") || String(msg).includes("page could not be found"))
+        ) {
+          msg =
+            "API route not found on Vercel (NOT_FOUND). Hard-refresh the page; if it persists the FastAPI deploy may be wrong.";
+        }
         throw new Error(`HTTP ${res.status}: ${msg}`);
       }
       return body;

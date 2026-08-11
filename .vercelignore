@@ -1,5 +1,6 @@
 trigger/node_modules
 trigger/.trigger
+node_modules
 **/__pycache__
 .git
 .env
