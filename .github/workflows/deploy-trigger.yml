@@ -1,0 +1,46 @@
+# Deploys Trigger.dev tasks from trigger/ (monorepo-aware).
+# Requires repo secret: TRIGGER_ACCESS_TOKEN
+#   https://cloud.trigger.dev/account/tokens
+#
+# Optional secrets used at build time for syncEnvVars in trigger.config.ts:
+#   SUPABASE_URL, SUPABASE_SECRET_KEY
+#
+# If you also use Trigger.dev's GitHub App auto-deploy, set its
+# "Trigger config file" to trigger/trigger.config.ts and
+# "Install command" to: cd trigger && npm install
+# — or disconnect the App to avoid duplicate deploys.
+
+name: Deploy Trigger.dev (prod)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "trigger/**"
+      - ".github/workflows/deploy-trigger.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trigger
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 20.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy to Trigger.dev
+        env:
+          TRIGGER_ACCESS_TOKEN: ${{ secrets.TRIGGER_ACCESS_TOKEN }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: npx trigger.dev@4.5.10 deploy --skip-update-check

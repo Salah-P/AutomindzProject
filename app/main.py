@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,10 @@ from trigger_client import TriggerError, trigger_scrape_jobs  # noqa: E402
 PUBLIC_DIR = ROOT / "public"
 WEB_DIR = PUBLIC_DIR if PUBLIC_DIR.exists() else ROOT / "web"
 
-app = FastAPI(title="Automindz Jobs API", version="0.4.1")
+# Soft cache: after this age, the next search re-triggers a scrape.
+CACHE_TTL_HOURS = float(os.getenv("CACHE_TTL_HOURS", "24"))
+
+app = FastAPI(title="Automindz Jobs API", version="0.4.2")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -67,6 +71,41 @@ def _normalize_job(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _parse_scraped_at(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # Supabase may return "+00:00" or "Z".
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def cache_is_fresh(jobs: list[dict[str, Any]], *, ttl_hours: float = CACHE_TTL_HOURS) -> bool:
+    """True when the newest row is newer than the TTL window."""
+    if not jobs or ttl_hours <= 0:
+        return False
+    newest: datetime | None = None
+    for row in jobs:
+        scraped = _parse_scraped_at(row.get("scraped_at"))
+        if scraped is None:
+            continue
+        if newest is None or scraped > newest:
+            newest = scraped
+    if newest is None:
+        return False
+    age = datetime.now(timezone.utc) - newest.astimezone(timezone.utc)
+    return age <= timedelta(hours=ttl_hours)
+
+
 @app.get("/health")
 @app.get("/api/health")
 def health() -> dict[str, str]:
@@ -79,18 +118,21 @@ def get_jobs(
     job_title: str = Query(..., min_length=1, description="Title filter / search query"),
     refresh: bool = Query(
         False,
-        description="If true, kick a new Trigger.dev scrape even when cache exists",
+        description="If true, kick a new Trigger.dev scrape even when cache is fresh",
+    ),
+    poll: bool = Query(
+        False,
+        description="If true, only read Supabase — never start a scrape (used by the UI while waiting)",
     ),
 ) -> GetJobsResponse:
     """
     Return jobs for job_title.
 
-    Cache hit: return immediately.
-    Cache miss / refresh: trigger Trigger.dev (task upserts to Supabase) and
-    return status=scraping so the client can poll. Fits Vercel Hobby 10s limit.
+    Fresh cache hit (within CACHE_TTL_HOURS): return immediately.
+    Cache miss / stale / refresh: trigger Trigger.dev (task upserts to Supabase)
+    and return status=scraping so the client can poll. Fits Vercel Hobby 10s limit.
 
-    Both ``/v1/get-jobs`` and ``/api/v1/get-jobs`` are registered — some Vercel
-    setups surface the latter in request logs / proxies.
+    Use ``poll=true`` while waiting so each poll does not start another scrape.
     """
     query = job_title.strip()
     if not query:
@@ -101,7 +143,27 @@ def get_jobs(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Database error: {exc}") from exc
 
-    if existing and not refresh:
+    fresh = cache_is_fresh(existing)
+
+    if poll:
+        if existing and fresh:
+            return GetJobsResponse(
+                job_title=query,
+                count=len(existing),
+                status="ready",
+                cached=True,
+                jobs=[JobOut(**_normalize_job(row)) for row in existing],
+            )
+        return GetJobsResponse(
+            job_title=query,
+            count=len(existing),
+            status="scraping",
+            cached=bool(existing),
+            message="Still waiting for scrape results.",
+            jobs=[JobOut(**_normalize_job(row)) for row in existing],
+        )
+
+    if existing and fresh and not refresh:
         return GetJobsResponse(
             job_title=query,
             count=len(existing),
@@ -117,13 +179,21 @@ def get_jobs(
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Scraper failed: {exc}") from exc
 
+    stale = bool(existing) and not fresh
+    message = "Scrape started. Poll this endpoint until status is ready."
+    if stale:
+        message = (
+            f"Cache older than {CACHE_TTL_HOURS:g}h — refresh started. "
+            "Poll until status is ready."
+        )
+
     return GetJobsResponse(
         job_title=query,
         count=len(existing),
         status="scraping",
         cached=False,
         run_id=run_id,
-        message="Scrape started. Poll this endpoint until status is ready.",
+        message=message,
         jobs=[JobOut(**_normalize_job(row)) for row in existing],
     )
 

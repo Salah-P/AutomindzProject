@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,8 @@ def upsert_jobs(jobs: list[dict[str, Any]], search_query: str, *, client: Client
         return 0
 
     sb = client or get_client()
+    # Always bump scraped_at so cache TTL can see a fresh scrape.
+    scraped_at = datetime.now(timezone.utc).isoformat()
     rows = [
         {
             "job_url": job["job_url"],
@@ -42,6 +45,7 @@ def upsert_jobs(jobs: list[dict[str, Any]], search_query: str, *, client: Client
             "company_name": job["company_name"],
             "job_description": job["job_description"],
             "search_query": search_query,
+            "scraped_at": scraped_at,
         }
         for job in jobs
     ]

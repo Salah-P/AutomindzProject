@@ -53,10 +53,10 @@ curl "https://automindz-jobs.vercel.app/v1/get-jobs?job_title=python&refresh=tru
 **Request flow**
 
 1. UI calls `GET /v1/get-jobs?job_title=…`.
-2. If Supabase already has rows for that query → return them (`status: ready`, `cached: true`).
-3. Else (or `refresh=true`) → trigger `scrape-jobs` on Trigger.dev and return `status: scraping`.
-4. The task runs `python scraper/run.py "<job_title>"`, word-boundary-matches title + description, upserts rows.
-5. UI polls `GET /v1/get-jobs?job_title=…` until `status: ready`.
+2. If Supabase already has **fresh** rows for that query (within `CACHE_TTL_HOURS`, default 24h) → return them (`status: ready`, `cached: true`).
+3. Else (miss, stale, or `refresh=true`) → trigger `scrape-jobs` on Trigger.dev and return `status: scraping`.
+4. The task runs `python scraper/run.py "<job_title>"`, word-boundary-matches title + description, upserts rows (updates `scraped_at`).
+5. UI polls `GET /v1/get-jobs?job_title=…&poll=true` until `status: ready` (poll never starts another scrape).
 
 ---
 
@@ -75,6 +75,7 @@ Copy `.env.example` → `.env` at the repo root (used by FastAPI locally). Trigg
 | `WWR_RSS_URL` | Optional | Override RSS URL |
 | `PYTHON_BIN` | Trigger (local) | `python` on Windows if `python3` is missing |
 | `AUTOMINDZ_ROOT` | Trigger (local) | Monorepo root so the task can find `scraper/` |
+| `CACHE_TTL_HOURS` | API | Re-scrape when cache for a query is older than this (default `24`) |
 
 Vercel Production should use **`tr_prod_…`**. Local `.env` should stay on **`tr_dev_…`** so the API talks to `trigger.dev dev`, not cloud.
 
@@ -146,6 +147,20 @@ cd /path/without/spaces/trigger
 npm install
 npx trigger.dev@4.5.10 deploy --env-file .env
 ```
+
+### Trigger.dev + GitHub
+
+The repo includes `.github/workflows/deploy-trigger.yml`, which deploys from `trigger/` on push to `main`.
+
+1. Create a Trigger personal access token: https://cloud.trigger.dev/account/tokens  
+2. Add GitHub repo secrets: `TRIGGER_ACCESS_TOKEN`, and preferably `SUPABASE_URL` + `SUPABASE_SECRET_KEY` (for build-time `syncEnvVars`).
+
+If you also use Trigger’s **GitHub App** auto-deploy, open the project’s Git settings and set:
+
+- **Trigger config file:** `trigger/trigger.config.ts`
+- **Install command:** `cd trigger && npm install`
+
+Otherwise the App looks at the repo root, fails in a few seconds, and shows a red check on GitHub. You can disconnect the App and rely on the Actions workflow above.
 
 ---
 

@@ -137,6 +137,7 @@ async function upsertJobs(jobs: ScrapedJob[], searchQuery: string): Promise<numb
     company_name: j.company_name,
     job_description: j.job_description,
     search_query: searchQuery,
+    scraped_at: new Date().toISOString(),
   }));
 
   const resp = await fetch(`${baseUrl.replace(/\/$/, "")}/rest/v1/jobs?on_conflict=job_url`, {

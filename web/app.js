@@ -89,7 +89,7 @@ function stopPolling() {
   }
 }
 
-async function fetchJobs(jobTitle, { refresh = false } = {}) {
+async function fetchJobs(jobTitle, { refresh = false, poll = false } = {}) {
   // Prefer /v1; fall back to /api/v1 if a proxy only exposes the /api prefix.
   const paths = ["/v1/get-jobs", "/api/v1/get-jobs"];
   let lastError = null;
@@ -98,6 +98,7 @@ async function fetchJobs(jobTitle, { refresh = false } = {}) {
     const url = new URL(path, API_BASE);
     url.searchParams.set("job_title", jobTitle);
     if (refresh) url.searchParams.set("refresh", "true");
+    if (poll) url.searchParams.set("poll", "true");
 
     try {
       const res = await fetch(url);
@@ -132,7 +133,7 @@ async function fetchJobs(jobTitle, { refresh = false } = {}) {
   throw lastError || new Error("Request failed");
 }
 
-function startPolling(jobTitle) {
+function startPolling(jobTitle, { keepJobs = false } = {}) {
   stopPolling();
   // Cap how long the UI waits for a scrape (Trigger task also has maxDuration).
   const pollEveryMs = 3000;
@@ -142,7 +143,7 @@ function startPolling(jobTitle) {
   pollTimer = setInterval(async () => {
     ticks += 1;
     try {
-      const data = await fetchJobs(jobTitle, { refresh: false });
+      const data = await fetchJobs(jobTitle, { poll: true });
       if (data.status === "ready" && data.jobs?.length) {
         setStatus(`Found ${data.count} job(s) for “${jobTitle}”.`);
         renderJobs(data.jobs);
@@ -162,16 +163,20 @@ function startPolling(jobTitle) {
           "Still no results after 90s — the scrape may still be running, try searching again shortly.",
           true,
         );
-        renderJobs([], {
-          emptyMessage: "Still searching — try again in a moment if nothing shows up.",
-        });
+        if (!keepJobs) {
+          renderJobs([], {
+            emptyMessage: "Still searching — try again in a moment if nothing shows up.",
+          });
+        }
         stopPolling();
         return;
       }
       setStatus(`Scraping via Trigger.dev… (${ticks * 3}s)`);
-      renderJobs([], {
-        emptyMessage: "Still searching — this can take a short while.",
-      });
+      if (!keepJobs) {
+        renderJobs([], {
+          emptyMessage: "Still searching — this can take a short while.",
+        });
+      }
     } catch (err) {
       setStatus(String(err.message || err), true);
       stopPolling();
@@ -190,7 +195,7 @@ form.addEventListener("submit", async (event) => {
   resultsEl.innerHTML = "";
 
   try {
-    // First try cache only (no refresh)
+    // Cache first (API auto-refreshes when TTL expired).
     let data = await fetchJobs(jobTitle, { refresh: false });
 
     if (data.status === "ready" && data.jobs?.length) {
@@ -199,19 +204,28 @@ form.addEventListener("submit", async (event) => {
       return;
     }
 
-    // Kick a scrape (refresh) then poll cache
-    data = await fetchJobs(jobTitle, { refresh: true });
-    if (data.status === "ready" && data.jobs?.length) {
-      setStatus(`Found ${data.count} job(s) for “${jobTitle}”.`);
-      renderJobs(data.jobs);
-      return;
+    // Status scraping: API already kicked Trigger (miss or stale TTL).
+    // Only force refresh when the first call did not start a run.
+    if (data.status !== "scraping") {
+      data = await fetchJobs(jobTitle, { refresh: true });
+      if (data.status === "ready" && data.jobs?.length) {
+        setStatus(`Found ${data.count} job(s) for “${jobTitle}”.`);
+        renderJobs(data.jobs);
+        return;
+      }
     }
 
-    setStatus("Scrape started. Waiting for results…");
-    renderJobs(data.jobs || [], {
-      emptyMessage: "Still searching — this can take a short while.",
-    });
-    startPolling(jobTitle);
+    setStatus(data.message || "Scrape started. Waiting for results…");
+    if (data.jobs?.length) {
+      // Stale cache refresh: show previous results while new scrape runs.
+      renderJobs(data.jobs);
+      startPolling(jobTitle, { keepJobs: true });
+    } else {
+      renderJobs([], {
+        emptyMessage: "Still searching — this can take a short while.",
+      });
+      startPolling(jobTitle);
+    }
   } catch (err) {
     setStatus(String(err.message || err), true);
   } finally {
