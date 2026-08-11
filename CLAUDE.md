@@ -1,167 +1,53 @@
 # Automindz — CLAUDE context
 
-> Living map of the repo. Update commands and paths as we build.
+> Living map of the repo. Prefer README.md for full runbooks.
 
-## What this system does
-
-End-to-end remote job scrape:
+## Flow
 
 ```
-User → Website (web/) → FastAPI /v1/get-jobs (api/)
-     → Trigger.dev task (trigger/) → Python scraper subprocess (scraper/)
-     → Supabase jobs table → results flow back via FastAPI → Website
+Browser (public/) → FastAPI app.main (Vercel)
+  → cache hit (Supabase, ≤ CACHE_TTL_HOURS) → return jobs
+  → miss / stale / refresh → Trigger.dev scrape-jobs
+       → python trigger/scraper/run.py → upsert jobs (unique job_url)
+  → UI polls ?poll=true until ready
 ```
 
-Job board today: **WeWorkRemotely** programming category RSS + per-job detail page for full description.
+Board: WeWorkRemotely programming RSS + detail pages.
 
-RSS: `https://weworkremotely.com/categories/remote-programming-jobs.rss`
+## Layout
 
-## Where each concern lives
+| Path | Role |
+|------|------|
+| `public/` | Static UI (served by FastAPI / Vercel) |
+| `app/` | FastAPI (`app.main:app`) — cache, trigger, static routes |
+| `scraper/` | Source scraper (`wwr_scraper.py`, `run.py`, optional `persist_demo.py`) |
+| `trigger/` | Trigger.dev task + bundled copy `trigger/scraper/` for cloud |
+| `trigger.config.ts` | Root Trigger config (GitHub App / production deploys) |
+| `trigger/trigger.config.ts` | Nested config for `cd trigger && npm run dev` |
+| `supabase/schema.sql` | `jobs` table (`UNIQUE(job_url)`) |
 
-| Concern | Path | Notes |
-|--------|------|--------|
-| Website UI | `web/` | Static HTML/CSS/JS. Calls FastAPI. Polls while status is `scraping` / `refreshing`. |
-| HTTP API | `api/` | FastAPI. `POST/GET /v1/get-jobs`. Reads Supabase; triggers scrape when cache miss or `force_refresh`. |
-| Async scrape orchestration | `trigger/` | Trigger.dev v3 task `scrape-weworkremotely`. Spawns Python scraper, upserts to Supabase. |
-| Scraper | `scraper/wwr_scraper.py` | `scrape_jobs(query)` — RSS → title filter → detail fetch. |
-| Scraper CLI | `scraper/run.py` | Prints JSON array to stdout (Trigger.dev subprocess). |
-| Supabase helpers | `api/supabase_client.py` | `upsert_jobs()` (dedup `job_url`), `get_jobs_by_query()`. |
-| DB schema | `supabase/schema.sql` | Source of truth for `jobs` (dedup on `job_url`). |
-| Env template | `.env.example` | Copy to repo-root `.env`. |
-
-## Data model (`jobs`)
-
-- `job_url` — unique dedup key
-- `job_title`, `company_name`, `job_description`
-- `search_query` — label for the run / user query (indexed)
-- `scraped_at` — default `now()`
-
-## Request flow (current)
-
-1. Browser `GET /v1/get-jobs?job_title=...`
-2. FastAPI `trigger_client.trigger_and_wait_scrape_jobs()` → Trigger.dev REST trigger + poll.
-3. Local/cloud worker runs task `scrape-jobs` (`trigger/src/scrapeJobsTask.ts`).
-4. Task spawns `python scraper/run.py "<job_title>"`, returns JSON jobs as the run output.
-5. FastAPI upserts to Supabase and returns rows to the browser.
-
-### Trigger.dev local
+## Local
 
 ```bash
-cd trigger
-npm install
-# ensure trigger/.env has TRIGGER_SECRET_KEY + AUTOMINDZ_ROOT
-npm run dev
-```
+cp .env.example .env   # SUPABASE_*, TRIGGER_SECRET_KEY=tr_dev_…
 
-In another terminal:
+# terminal A
+cd trigger && npm install && npm run dev
 
-```bash
-cd api
-uvicorn main:app --reload --host 127.0.0.1 --port 8000
-```
-
-### Deploy notes
-
-**Trigger.dev cloud**
-- Task id: `scrape-jobs`
-- Deploy from a filesystem path **without spaces** (Windows path `Automindz project` breaks the cloud indexer). Copy `trigger/` elsewhere or rename the repo folder, then:
-  ```bash
-  cd <path-without-spaces>/trigger
-  npm install
-  npx trigger.dev@4.5.10 deploy
-  ```
-- Production needs the **prod** secret key (`tr_prod_…`) in Vercel, not `tr_dev_…`.
-- Dashboard env (optional): `SCRAPER_REQUEST_DELAY=0.25`, `SCRAPER_USER_AGENT=…`
-
-**Vercel (Hobby)**
-- Root `requirements.txt` + `api/index.py` (exports `app`) + `web/` static via FastAPI.
-- `vercel.json` sets `maxDuration: 10` (Hobby limit).
-- Default `/v1/get-jobs` returns Supabase cache when present; `?refresh=true` forces Trigger scrape (may timeout on Hobby if the scrape exceeds 10s).
-
-## Local run commands
-
-Copy env first:
-
-```bash
-cp .env.example .env
-# fill SUPABASE_*, TRIGGER_SECRET_KEY, etc.
-```
-
-### Supabase
-
-Schema is already applied in your project (see `supabase/schema.sql` if you need to recreate).
-
-No local Supabase CLI required for day-to-day work.
-
-### Scraper (standalone)
-
-```bash
-# JSON to stdout (what Trigger.dev will call)
-python scraper/run.py "python" --limit 3
-
-# Scrape + upsert twice against Supabase (dedup proof)
-# requires repo-root .env with SUPABASE_* and: pip install -r api/requirements.txt
-python scraper/persist_demo.py "python" --limit 5 --runs 2
-```
-
-Scraper itself is stdlib-only (Python 3.11+). Persistence uses `supabase` from `api/requirements.txt`.
-
-### FastAPI (+ web UI)
-
-Local (from repo root):
-
-```bash
+# terminal B (repo root)
 pip install -r requirements.txt
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Production: https://automindz-jobs.vercel.app
+Standalone scrape: `python scraper/run.py "python"`
 
-- UI: `/`
-- Jobs: `GET /v1/get-jobs?job_title=python` (cached when rows exist)
-- Force scrape: `GET /v1/get-jobs?job_title=python&refresh=true` (needs Trigger cloud; may exceed Hobby 10s)
-- Health: `GET /health`
+## Deploy
 
-### Trigger.dev
-
-```bash
-cd trigger
-npm install
-# set TRIGGER project id in trigger.config.ts (project: "proj_...")
-# ensure SUPABASE_* are available to the Trigger.dev runtime / .env
-npm run dev
-```
-
-Task id: `scrape-weworkremotely` (must match `TRIGGER_SCRAPE_TASK_ID` in `.env`).
-
-Requires `python` on PATH so the task can subprocess `scraper/wwr.py`.
-
-### Website
-
-Serve `web/` with any static server (examples):
-
-```bash
-# Python
-cd web && python -m http.server 5173
-
-# or VS Code / Cursor Live Preview / open index.html via a local static host
-```
-
-Open `http://127.0.0.1:5173`. API base defaults to `http://127.0.0.1:8000` (override in DevTools: `localStorage.setItem('API_BASE', '...')`).
-
-Ensure `CORS_ORIGINS` in `.env` includes your web origin.
+- **Vercel:** FastAPI via `pyproject.toml` `[tool.vercel] entrypoint = "app.main:app"`; force `framework: fastapi` in `vercel.json` (root `package.json` is for Trigger only).
+- **Trigger:** GitHub App uses root `trigger.config.ts` + `trigger.python.requirements.txt`. Task id: `scrape-jobs`. Use `tr_prod_…` on Vercel.
 
 ## Conventions
 
-- Dedup / upsert key is always `job_url`.
-- Scraper prints human summary by default; use `--json` for machine consumers (Trigger.dev).
-- Prefer service-role Supabase key only in API + Trigger (never in `web/`).
-- Keep board-specific scrape logic in `scraper/`; keep HTTP and caching policy in `api/`; keep orchestration in `trigger/`.
-
-## Still to harden (as we build)
-
-- [ ] Confirm Trigger.dev REST trigger URL/payload against the project’s dashboard / SDK version
-- [ ] Richer WWR detail extraction (CSS-scoped description block vs full-page text)
-- [ ] Auth / rate limits on `/v1/get-jobs`
-- [ ] Webhook or realtime when scrape finishes (instead of poll-only)
-- [ ] Additional job boards behind the same `jobs` schema
+- Dedup key: `job_url`
+- After editing `scraper/`, copy `run.py` + `wwr_scraper.py` into `trigger/scraper/` before relying on cloud
+- Never put service-role keys in `public/`

@@ -24,7 +24,7 @@ from supabase_client import get_jobs_by_query  # noqa: E402
 from trigger_client import TriggerError, trigger_scrape_jobs  # noqa: E402
 
 PUBLIC_DIR = ROOT / "public"
-WEB_DIR = PUBLIC_DIR if PUBLIC_DIR.exists() else ROOT / "web"
+WEB_DIR = PUBLIC_DIR
 
 # Soft cache: after this age, the next search re-triggers a scrape.
 CACHE_TTL_HOURS = float(os.getenv("CACHE_TTL_HOURS", "24"))

@@ -44,11 +44,12 @@ curl "https://automindz-jobs.vercel.app/v1/get-jobs?job_title=python&refresh=tru
 
 | Path | Role |
 |------|------|
-| `public/` / `web/` | Static HTML/CSS/JS UI |
+| `public/` | Static HTML/CSS/JS UI |
 | `app/` | FastAPI gateway (`app.main:app`) — cache read, trigger scrape, serve UI |
 | `trigger/` | Trigger.dev task `scrape-jobs` — runs the scraper, upserts to Supabase |
 | `scraper/` | WeWorkRemotely scraper (`wwr_scraper.py`, CLI `run.py`) |
 | `supabase/schema.sql` | `jobs` table (unique on `job_url`) |
+| `trigger.config.ts` | Trigger.dev config at repo root (GitHub / prod deploys) |
 
 **Request flow**
 

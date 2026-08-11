@@ -15,15 +15,15 @@ venv/
 
 # Node / Trigger.dev
 node_modules/
+.trigger/
 trigger/.trigger/
 trigger/dist/
 *.tsbuildinfo
 
-# OS / editor
+# Vercel / OS / editor
+.vercel/
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
-.vercel
-.env*

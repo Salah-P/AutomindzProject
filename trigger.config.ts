@@ -56,7 +56,7 @@ export default defineConfig({
     extensions: [
       pythonExtension({
         requirementsFile: "./trigger.python.requirements.txt",
-        scripts: ["./trigger/scraper/**/*.py"],
+        scripts: ["./trigger/scraper/run.py", "./trigger/scraper/wwr_scraper.py"],
       }),
       syncEnvVars(async () => {
         const env = loadDotEnv();

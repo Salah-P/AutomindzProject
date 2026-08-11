@@ -49,7 +49,7 @@ export default defineConfig({
     extensions: [
       pythonExtension({
         requirementsFile: "./requirements.txt",
-        scripts: ["./scraper/**/*.py"],
+        scripts: ["./scraper/run.py", "./scraper/wwr_scraper.py"],
       }),
       syncEnvVars(async () => {
         const env = loadDotEnv();
