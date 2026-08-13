@@ -58,30 +58,67 @@ def chat_json(
     """
     Chat completion via Hugging Face router; parse JSON from the reply.
     """
-    try:
-        completion = _client(timeout=timeout).chat.completions.create(
-            model=_model(),
-            temperature=temperature,
-            messages=[
-                {"role": "system", "content": system},
-                {
-                    "role": "user",
-                    "content": (
-                        f"{user}\n\n"
-                        "Respond with valid JSON only (no markdown fences)."
-                    ),
-                },
-            ],
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise LlmError(f"Hugging Face chat failed: {exc}") from exc
+    last_err: Exception | None = None
+    for attempt in range(2):
+        try:
+            completion = _client(timeout=timeout).chat.completions.create(
+                model=_model(),
+                temperature=temperature if attempt == 0 else min(0.4, temperature + 0.2),
+                messages=[
+                    {"role": "system", "content": system},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{user}\n\n"
+                            "Respond with valid JSON only (no markdown fences)."
+                        ),
+                    },
+                ],
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_err = LlmError(f"Hugging Face chat failed: {exc}")
+            continue
 
+        content = _message_text(completion)
+        if not content.strip():
+            last_err = LlmError("Empty model response")
+            continue
+        try:
+            return _parse_json_content(content)
+        except LlmError as exc:
+            last_err = exc
+            continue
+
+    raise last_err or LlmError("Hugging Face chat failed")
+
+
+def _message_text(completion: Any) -> str:
     try:
-        content = completion.choices[0].message.content or ""
+        msg = completion.choices[0].message
     except (IndexError, AttributeError, TypeError) as exc:
         raise LlmError(f"Unexpected HF response shape: {completion}") from exc
 
-    return _parse_json_content(content)
+    content = getattr(msg, "content", None)
+    if isinstance(content, str) and content.strip():
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text") or ""))
+            else:
+                text = getattr(part, "text", None)
+                if text:
+                    parts.append(str(text))
+        joined = "\n".join(parts).strip()
+        if joined:
+            return joined
+    # Some router models put text in refusal / reasoning-like extras
+    for attr in ("refusal", "reasoning"):
+        extra = getattr(msg, attr, None)
+        if isinstance(extra, str) and extra.strip():
+            return extra
+    return ""
 
 
 def _parse_json_content(content: str) -> Any:
@@ -97,7 +134,10 @@ def _parse_json_content(content: str) -> Any:
         match = re.search(r"\{[\s\S]*\}|\[[\s\S]*\]", text)
         if not match:
             raise LlmError(f"Model did not return JSON: {text[:400]}")
-        return json.loads(match.group(0))
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError as exc:
+            raise LlmError(f"Model returned invalid JSON: {exc}") from exc
 
 
 def build_profile_and_titles(cv_text: str) -> dict[str, Any]:
@@ -119,9 +159,13 @@ def build_profile_and_titles(cv_text: str) -> dict[str, Any]:
         '(e.g. "python backend", "platform engineer"), not only the current title.'
     )
     clipped = cv_text[:12000]
-    result = chat_json(system=system, user=f"CV text:\n\n{clipped}")
+    try:
+        result = chat_json(system=system, user=f"CV text:\n\n{clipped}")
+    except LlmError:
+        return _heuristic_profile_and_titles(cv_text)
+
     if not isinstance(result, dict):
-        raise LlmError("Expected a JSON object for profile/titles")
+        return _heuristic_profile_and_titles(cv_text)
 
     profile = result.get("profile") or {}
     titles = result.get("titles") or []
@@ -133,7 +177,7 @@ def build_profile_and_titles(cv_text: str) -> dict[str, Any]:
         if s and s.lower() not in {x.lower() for x in clean_titles}:
             clean_titles.append(s)
     if not clean_titles:
-        raise LlmError("Model returned no search titles")
+        return _heuristic_profile_and_titles(cv_text)
 
     return {
         "profile": {
@@ -148,61 +192,139 @@ def build_profile_and_titles(cv_text: str) -> dict[str, Any]:
     }
 
 
+def _heuristic_profile_and_titles(cv_text: str) -> dict[str, Any]:
+    """Offline fallback when the LLM provider is unavailable / out of credits."""
+    text = cv_text or ""
+    lower = text.lower()
+    skill_vocab = [
+        "python",
+        "django",
+        "flask",
+        "fastapi",
+        "javascript",
+        "typescript",
+        "react",
+        "node",
+        "java",
+        "sql",
+        "mysql",
+        "postgres",
+        "aws",
+        "docker",
+        "kubernetes",
+        "git",
+        "linux",
+        "api",
+        "backend",
+        "frontend",
+    ]
+    skills = [s for s in skill_vocab if s in lower]
+    titles = []
+    if "python" in skills:
+        titles.extend(["python", "python developer", "backend developer"])
+    if "django" in skills:
+        titles.append("django")
+    if "qa" in lower or "test" in lower:
+        titles.append("qa engineer")
+    if not titles:
+        titles = ["python", "software engineer", "backend"]
+    # dedupe preserve order
+    clean: list[str] = []
+    for t in titles:
+        if t.lower() not in {x.lower() for x in clean}:
+            clean.append(t)
+    summary = " ".join(text.split())[:280] or "Candidate profile extracted from CV text."
+    return {
+        "profile": {
+            "summary": summary,
+            "roles": [],
+            "seniority": "unknown",
+            "skills": skills[:20],
+            "industries": [],
+            "locations": [],
+        },
+        "titles": clean[:6],
+    }
+
+
 def score_jobs(profile: dict[str, Any], jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """LLM call 2: score each job; return ranked list with reasons."""
     if not jobs:
         return []
 
-    compact = []
-    for j in jobs[:25]:
-        compact.append(
-            {
-                "job_url": j.get("job_url"),
-                "job_title": j.get("job_title"),
-                "company_name": j.get("company_name"),
-                "job_description": str(j.get("job_description") or "")[:1800],
-            }
+    indexed = jobs[:12]
+    scored_by_id: dict[int, dict[str, Any]] = {}
+    batch_size = 3
+
+    slim_profile = {
+        "summary": str(profile.get("summary") or "")[:500],
+        "seniority": profile.get("seniority") or "",
+        "skills": (profile.get("skills") or [])[:15],
+        "roles": (profile.get("roles") or [])[:6],
+    }
+
+    for start in range(0, len(indexed), batch_size):
+        batch = indexed[start : start + batch_size]
+        compact = []
+        for offset, j in enumerate(batch):
+            compact.append(
+                {
+                    "id": start + offset,
+                    "job_title": j.get("job_title"),
+                    "company_name": j.get("company_name"),
+                    "job_description": str(j.get("job_description") or "")[:500],
+                }
+            )
+        system = (
+            "Score candidate-job fit. Return ONLY compact JSON:\n"
+            '{"matches":[{"id":0,"score":80,"reason":"short reason"}]}\n'
+            "Include every id. score 0-100. reason <= 25 words."
         )
-
-    system = (
-        "You are a hiring match scorer. Given a candidate profile and job listings, "
-        "return ONLY JSON:\n"
-        '{\n  "matches": [\n'
-        '    {"job_url": string, "score": number, "reason": string}\n'
-        "  ]\n}\n"
-        "Score 0-100. Include every job_url provided. Reasons must be specific. "
-        "Sort matches by score descending."
-    )
-    user = json.dumps({"profile": profile, "jobs": compact}, ensure_ascii=False)
-    result = chat_json(system=system, user=user, temperature=0.1)
-    if not isinstance(result, dict):
-        raise LlmError("Expected a JSON object for matches")
-
-    raw = result.get("matches") or []
-    if not isinstance(raw, list):
-        raise LlmError("matches must be a list")
-
-    by_url = {str(j.get("job_url")): j for j in jobs}
-    scored: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        url = str(item.get("job_url") or "").strip()
-        if not url or url not in by_url or url in seen:
-            continue
-        seen.add(url)
+        user = json.dumps({"profile": slim_profile, "jobs": compact}, ensure_ascii=False)
         try:
-            score = float(item.get("score", 0))
-        except (TypeError, ValueError):
-            score = 0.0
-        score = max(0.0, min(100.0, score))
-        reason = str(item.get("reason") or "").strip() or "No reason provided."
-        job = by_url[url]
+            result = chat_json(system=system, user=user, temperature=0.1, timeout=60.0)
+            raw = result.get("matches") if isinstance(result, dict) else None
+            if not isinstance(raw, list):
+                raise LlmError("bad matches")
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    idx = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if idx < start or idx >= start + len(batch) or idx in scored_by_id:
+                    continue
+                try:
+                    score = float(item.get("score", 0))
+                except (TypeError, ValueError):
+                    score = 0.0
+                scored_by_id[idx] = {
+                    "score": max(0.0, min(100.0, score)),
+                    "reason": str(item.get("reason") or "").strip() or "No reason provided.",
+                }
+        except LlmError:
+            for offset, job in enumerate(batch):
+                idx = start + offset
+                if idx not in scored_by_id:
+                    scored_by_id[idx] = {
+                        "score": _heuristic_score(profile, job),
+                        "reason": (
+                            "LLM scoring unavailable for this batch; "
+                            "score estimated from skill overlap."
+                        ),
+                    }
+
+    scored: list[dict[str, Any]] = []
+    for i, job in enumerate(indexed):
+        entry = scored_by_id.get(i) or {
+            "score": _heuristic_score(profile, job),
+            "reason": "Model omitted this listing; score estimated from skill overlap.",
+        }
         scored.append(
             {
-                "score": score,
-                "reason": reason,
+                "score": entry["score"],
+                "reason": entry["reason"],
                 "job": {
                     "id": str(job.get("id") or ""),
                     "job_url": job.get("job_url"),
@@ -217,3 +339,12 @@ def score_jobs(profile: dict[str, Any], jobs: list[dict[str, Any]]) -> list[dict
 
     scored.sort(key=lambda m: m["score"], reverse=True)
     return scored
+
+
+def _heuristic_score(profile: dict[str, Any], job: dict[str, Any]) -> float:
+    skills = [str(s).lower() for s in (profile.get("skills") or []) if s]
+    blob = f"{job.get('job_title') or ''} {job.get('job_description') or ''}".lower()
+    if not skills:
+        return 40.0
+    hits = sum(1 for s in skills if len(s) > 2 and s in blob)
+    return max(15.0, min(85.0, 25.0 + hits * 8.0))

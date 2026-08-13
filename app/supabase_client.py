@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,48 @@ def get_jobs_by_query(search_query: str, *, client: Client | None = None) -> lis
         .select("*")
         .eq("search_query", search_query)
         .order("scraped_at", desc=True)
+        .execute()
+    )
+    return list(result.data or [])
+
+
+def search_jobs_text(term: str, *, limit: int = 40, client: Client | None = None) -> list[dict[str, Any]]:
+    """
+    Broader retrieval for CV matching: match term against title, description, or search_query.
+    """
+    q = (term or "").strip()
+    if not q:
+        return []
+    safe = re.sub(r"[,%()]", " ", q)
+    safe = " ".join(safe.split())
+    if not safe:
+        return []
+    pattern = f"%{safe}%"
+    sb = client or get_client()
+    by_url: dict[str, dict[str, Any]] = {}
+    for column in ("job_title", "job_description", "search_query"):
+        result = (
+            sb.table("jobs")
+            .select("*")
+            .ilike(column, pattern)
+            .order("scraped_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        for row in result.data or []:
+            url = str(row.get("job_url") or "")
+            if url:
+                by_url[url] = row
+    return list(by_url.values())[:limit]
+
+
+def get_recent_jobs(*, limit: int = 40, client: Client | None = None) -> list[dict[str, Any]]:
+    sb = client or get_client()
+    result = (
+        sb.table("jobs")
+        .select("*")
+        .order("scraped_at", desc=True)
+        .limit(limit)
         .execute()
     )
     return list(result.data or [])

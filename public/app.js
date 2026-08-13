@@ -369,19 +369,21 @@ cvForm?.addEventListener("submit", async (event) => {
     setCvStatus(data.message || `Status: ${data.status}`);
 
     if (data.status === "ready" && data.matches?.length) {
-      setStatus(`Ranked ${data.matches.length} match(es) from your CV.`);
+      setStatus(
+        `Scored ${data.matches.length} job(s) against your CV (highest first).`,
+      );
       renderMatches(data.matches);
     } else if (data.status === "scraping") {
       setStatus(
-        "Live scrapes started for your suggested titles — try Upload & match again shortly.",
+        "Live scrapes started for your suggested titles — try Upload & match again shortly to get scores.",
       );
       renderMatches([], {
         emptyMessage:
-          "No cached jobs yet for those titles. Wait for scrapes, then upload again.",
+          "No jobs to score yet. Wait for scrapes, then upload again for ranked matches.",
       });
     } else {
-      setStatus("No ranked matches returned.");
-      renderMatches([], { emptyMessage: "No ranked matches returned." });
+      setStatus("No scored matches returned.");
+      renderMatches([], { emptyMessage: "No scored matches returned." });
     }
   } catch (err) {
     setCvStatus(String(err.message || err), true);
