@@ -13,6 +13,8 @@ DEFAULT_OLLAMA_BASE = "http://127.0.0.1:11434/v1"
 DEFAULT_OLLAMA_MODEL = "llama3:latest"
 DEFAULT_HF_BASE = "https://router.huggingface.co/v1"
 DEFAULT_HF_MODEL = "moonshotai/Kimi-K3:together"
+DEFAULT_OPENROUTER_BASE = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o"
 
 
 class LlmError(RuntimeError):
@@ -24,18 +26,21 @@ OpenRouterError = LlmError
 
 
 def _provider() -> str:
-    return (os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
+    return (os.getenv("LLM_PROVIDER") or "openrouter").strip().lower()
 
 
 def _api_key() -> str:
     provider = _provider()
     if provider == "ollama":
-        # Ollama ignores the key but the OpenAI client requires a non-empty value.
         return os.getenv("OLLAMA_API_KEY", "ollama").strip() or "ollama"
+    if provider in {"openrouter", "or"}:
+        key = os.getenv("OPENROUTER_API_KEY", "").strip()
+        if not key:
+            raise LlmError("OPENROUTER_API_KEY is not set — add it to .env")
+        return key
     key = (
         os.getenv("HF_TOKEN", "").strip()
         or os.getenv("HUGGINGFACE_HUB_TOKEN", "").strip()
-        or os.getenv("OPENROUTER_API_KEY", "").strip()
     )
     if not key:
         raise LlmError("HF_TOKEN is not set — add it to .env / Vercel env vars")
@@ -45,36 +50,42 @@ def _api_key() -> str:
 def _model() -> str:
     provider = _provider()
     if provider == "ollama":
+        return os.getenv("OLLAMA_MODEL", "").strip() or DEFAULT_OLLAMA_MODEL
+    if provider in {"openrouter", "or"}:
         return (
-            os.getenv("OLLAMA_MODEL", "").strip()
-            or os.getenv("HF_MODEL", "").strip()
-            or DEFAULT_OLLAMA_MODEL
+            os.getenv("OPENROUTER_MODEL", "").strip()
+            or DEFAULT_OPENROUTER_MODEL
         )
-    return (
-        os.getenv("HF_MODEL", "").strip()
-        or os.getenv("OPENROUTER_MODEL", "").strip()
-        or DEFAULT_HF_MODEL
-    )
+    return os.getenv("HF_MODEL", "").strip() or DEFAULT_HF_MODEL
 
 
 def _base_url() -> str:
     provider = _provider()
     if provider == "ollama":
+        return os.getenv("OLLAMA_BASE_URL", "").strip() or DEFAULT_OLLAMA_BASE
+    if provider in {"openrouter", "or"}:
         return (
-            os.getenv("OLLAMA_BASE_URL", "").strip()
-            or DEFAULT_OLLAMA_BASE
+            os.getenv("OPENROUTER_BASE_URL", "").strip()
+            or DEFAULT_OPENROUTER_BASE
         )
-    return (
-        os.getenv("HF_BASE_URL", "").strip()
-        or DEFAULT_HF_BASE
-    )
+    return os.getenv("HF_BASE_URL", "").strip() or DEFAULT_HF_BASE
 
 
-def _client(*, timeout: float = 180.0) -> OpenAI:
+def _client(*, timeout: float = 120.0) -> OpenAI:
+    provider = _provider()
+    default_headers = {}
+    if provider in {"openrouter", "or"}:
+        default_headers = {
+            "HTTP-Referer": os.getenv(
+                "OPENROUTER_HTTP_REFERER", "https://automindz-jobs.vercel.app"
+            ),
+            "X-Title": os.getenv("OPENROUTER_APP_TITLE", "Automindz Jobs"),
+        }
     return OpenAI(
         base_url=_base_url(),
         api_key=_api_key(),
         timeout=timeout,
+        default_headers=default_headers or None,
     )
 
 
@@ -94,6 +105,7 @@ def chat_json(
             completion = _client(timeout=timeout).chat.completions.create(
                 model=_model(),
                 temperature=temperature if attempt == 0 else min(0.4, temperature + 0.2),
+                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "1200")),
                 messages=[
                     {"role": "system", "content": system},
                     {

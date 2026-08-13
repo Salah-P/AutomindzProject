@@ -77,12 +77,13 @@ Copy `.env.example` → `.env` at the repo root (used by FastAPI locally). Trigg
 | `PYTHON_BIN` | Trigger (local) | `python` on Windows if `python3` is missing |
 | `AUTOMINDZ_ROOT` | Trigger (local) | Monorepo root so the task can find `scraper/` |
 | `CACHE_TTL_HOURS` | API | Re-scrape when cache for a query is older than this (default `24`) |
-| `HF_TOKEN` | API | Hugging Face token when `LLM_PROVIDER=hf` |
-| `HF_MODEL` | API | HF model id |
-| `HF_BASE_URL` | API | Default `https://router.huggingface.co/v1` |
-| `LLM_PROVIDER` | API | `ollama` (default, local) or `hf` |
+| `LLM_PROVIDER` | API | `openrouter` (default), `ollama`, or `hf` |
+| `OPENROUTER_API_KEY` | API | OpenRouter key when provider is `openrouter` |
+| `OPENROUTER_MODEL` | API | Default `openai/gpt-4o` |
+| `LLM_MAX_TOKENS` | API | Cap completion size (default `1200`) |
 | `OLLAMA_BASE_URL` | API | Default `http://127.0.0.1:11434/v1` |
-| `OLLAMA_MODEL` | API | Default `llama3:latest` (also have mistral/phi3/gemma4) |
+| `OLLAMA_MODEL` | API | Default `llama3:latest` |
+| `HF_TOKEN` | API | Hugging Face token when `LLM_PROVIDER=hf` |
 | `MATCH_SCRAPE_WAIT_SECONDS` | API | Brief wait for scrapes during CV match (default `8`) |
 
 ### CV match flow
