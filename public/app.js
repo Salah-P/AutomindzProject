@@ -55,19 +55,71 @@ function renderJobs(jobs, { emptyMessage } = {}) {
   }
 
   for (const job of jobs) {
-    const article = document.createElement("article");
-    article.className = "job";
-    article.innerHTML = `
-      <h2>${escapeHtml(job.job_title)}</h2>
+    resultsEl.appendChild(jobArticle(job));
+  }
+}
+
+function jobArticle(job, { score, reason } = {}) {
+  const article = document.createElement("article");
+  article.className = "job";
+  const scoreHtml =
+    score != null
+      ? `<span class="score">${escapeHtml(String(Math.round(score)))}/100</span>`
+      : "";
+  const reasonHtml = reason
+    ? `<p class="reason">${escapeHtml(reason)}</p>`
+    : "";
+  article.innerHTML = `
+      <h2>${escapeHtml(job.job_title)}${scoreHtml}</h2>
       <p class="meta">
         ${escapeHtml(job.company_name)}
         ·
         <a href="${escapeAttr(job.job_url)}" target="_blank" rel="noopener">View listing</a>
       </p>
+      ${reasonHtml}
       <p>${escapeHtml(shortDescription(job.job_description))}</p>
     `;
-    resultsEl.appendChild(article);
+  return article;
+}
+
+function renderMatches(matches, { emptyMessage } = {}) {
+  resultsEl.innerHTML = "";
+  if (!matches?.length) {
+    resultsEl.innerHTML = `<p class="meta">${escapeHtml(
+      emptyMessage || "No ranked matches yet.",
+    )}</p>`;
+    return;
   }
+  for (const m of matches) {
+    resultsEl.appendChild(
+      jobArticle(m.job, { score: m.score, reason: m.reason }),
+    );
+  }
+}
+
+function renderProfile(profile, titles) {
+  const el = document.getElementById("cv-profile");
+  if (!el) return;
+  if (!profile) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const skills = (profile.skills || []).slice(0, 12);
+  const roles = (profile.roles || []).slice(0, 6);
+  el.hidden = false;
+  el.innerHTML = `
+    <h3>Candidate profile</h3>
+    <p>${escapeHtml(profile.summary || "")}</p>
+    <p class="meta">Seniority: ${escapeHtml(profile.seniority || "—")}</p>
+    <p class="meta">Search titles: ${escapeHtml((titles || []).join(" · ") || "—")}</p>
+    <ul class="chips">${roles
+      .map((r) => `<li>${escapeHtml(r)}</li>`)
+      .join("")}</ul>
+    <ul class="chips">${skills
+      .map((s) => `<li>${escapeHtml(s)}</li>`)
+      .join("")}</ul>
+  `;
 }
 
 function escapeHtml(value) {
@@ -237,5 +289,103 @@ form.addEventListener("submit", async (event) => {
     setStatus(String(err.message || err), true);
   } finally {
     button.disabled = false;
+  }
+});
+
+const cvForm = document.getElementById("cv-form");
+const cvFile = document.getElementById("cv-file");
+const cvStatus = document.getElementById("cv-status");
+const cvFileName = document.getElementById("cv-file-name");
+const cvSubmit = document.getElementById("cv-submit");
+
+function setCvStatus(message, isError = false) {
+  if (!cvStatus) return;
+  cvStatus.textContent = message;
+  cvStatus.classList.toggle("error", isError);
+}
+
+cvFile?.addEventListener("change", () => {
+  const file = cvFile.files?.[0];
+  if (cvFileName) cvFileName.textContent = file ? file.name : "";
+});
+
+cvForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  stopPolling();
+
+  const file = cvFile?.files?.[0];
+  if (!file) {
+    setCvStatus("Choose a PDF or DOCX first.", true);
+    return;
+  }
+
+  if (cvSubmit) cvSubmit.disabled = true;
+  setCvStatus("Parsing CV and matching jobs… this can take a bit.");
+  setStatus("");
+  resultsEl.innerHTML = "";
+  renderProfile(null, []);
+
+  try {
+    const paths = ["/v1/match-cv", "/api/v1/match-cv"];
+    let lastError = null;
+    let data = null;
+
+    for (const path of paths) {
+      const url = new URL(path, API_BASE);
+      const body = new FormData();
+      body.append("file", file, file.name);
+      try {
+        const res = await fetch(url, { method: "POST", body });
+        const text = await res.text();
+        let parsed = {};
+        try {
+          parsed = text ? JSON.parse(text) : {};
+        } catch {
+          parsed = { detail: text.slice(0, 300) };
+        }
+        if (res.status === 404 && path === paths[0]) {
+          lastError = new Error(`HTTP 404 at ${url.pathname}`);
+          continue;
+        }
+        if (!res.ok) {
+          const detail = parsed.detail || res.statusText || "Request failed";
+          const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
+          throw new Error(`HTTP ${res.status}: ${msg}`);
+        }
+        data = parsed;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (path === paths[0] && String(err.message || err).includes("404")) {
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!data) throw lastError || new Error("Match request failed");
+
+    renderProfile(data.profile, data.titles || []);
+    setCvStatus(data.message || `Status: ${data.status}`);
+
+    if (data.status === "ready" && data.matches?.length) {
+      setStatus(`Ranked ${data.matches.length} match(es) from your CV.`);
+      renderMatches(data.matches);
+    } else if (data.status === "scraping") {
+      setStatus(
+        "Live scrapes started for your suggested titles — try Upload & match again shortly.",
+      );
+      renderMatches([], {
+        emptyMessage:
+          "No cached jobs yet for those titles. Wait for scrapes, then upload again.",
+      });
+    } else {
+      setStatus("No ranked matches returned.");
+      renderMatches([], { emptyMessage: "No ranked matches returned." });
+    }
+  } catch (err) {
+    setCvStatus(String(err.message || err), true);
+  } finally {
+    if (cvSubmit) cvSubmit.disabled = false;
   }
 });

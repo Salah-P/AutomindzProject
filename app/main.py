@@ -1,15 +1,14 @@
-"""FastAPI: Trigger.dev scrape → Supabase → web UI."""
+"""FastAPI: Trigger.dev scrape → Supabase → web UI + CV match."""
 
 from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -20,16 +19,17 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from cv_parser import CvParseError  # noqa: E402
+from job_cache import CACHE_TTL_HOURS, cache_is_fresh  # noqa: E402
+from match_service import match_cv_bytes  # noqa: E402
+from openrouter_client import OpenRouterError  # noqa: E402
 from supabase_client import get_jobs_by_query  # noqa: E402
 from trigger_client import TriggerError, trigger_scrape_jobs  # noqa: E402
 
 PUBLIC_DIR = ROOT / "public"
 WEB_DIR = PUBLIC_DIR
 
-# Soft cache: after this age, the next search re-triggers a scrape.
-CACHE_TTL_HOURS = float(os.getenv("CACHE_TTL_HOURS", "24"))
-
-app = FastAPI(title="Automindz Jobs API", version="0.4.2")
+app = FastAPI(title="Automindz Jobs API", version="0.5.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,51 +59,41 @@ class GetJobsResponse(BaseModel):
     jobs: list[JobOut] = Field(default_factory=list)
 
 
+class CandidateProfile(BaseModel):
+    summary: str = ""
+    roles: list[str] = Field(default_factory=list)
+    seniority: str = ""
+    skills: list[str] = Field(default_factory=list)
+    industries: list[str] = Field(default_factory=list)
+    locations: list[str] = Field(default_factory=list)
+
+
+class RankedMatch(BaseModel):
+    score: float
+    reason: str
+    job: JobOut
+
+
+class MatchCvResponse(BaseModel):
+    status: str
+    message: str | None = None
+    profile: CandidateProfile
+    titles: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    cv_upload_id: str | None = None
+    matches: list[RankedMatch] = Field(default_factory=list)
+
+
 def _normalize_job(row: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": str(row["id"]),
+        "id": str(row.get("id") or ""),
         "job_url": row["job_url"],
         "job_title": row["job_title"],
         "company_name": row["company_name"],
         "job_description": row["job_description"],
-        "search_query": row["search_query"],
-        "scraped_at": str(row["scraped_at"]),
+        "search_query": row.get("search_query") or "",
+        "scraped_at": str(row.get("scraped_at") or ""),
     }
-
-
-def _parse_scraped_at(value: Any) -> datetime | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    # Supabase may return "+00:00" or "Z".
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
-def cache_is_fresh(jobs: list[dict[str, Any]], *, ttl_hours: float = CACHE_TTL_HOURS) -> bool:
-    """True when the newest row is newer than the TTL window."""
-    if not jobs or ttl_hours <= 0:
-        return False
-    newest: datetime | None = None
-    for row in jobs:
-        scraped = _parse_scraped_at(row.get("scraped_at"))
-        if scraped is None:
-            continue
-        if newest is None or scraped > newest:
-            newest = scraped
-    if newest is None:
-        return False
-    age = datetime.now(timezone.utc) - newest.astimezone(timezone.utc)
-    return age <= timedelta(hours=ttl_hours)
 
 
 @app.get("/health")
@@ -125,15 +115,7 @@ def get_jobs(
         description="If true, only read Supabase — never start a scrape (used by the UI while waiting)",
     ),
 ) -> GetJobsResponse:
-    """
-    Return jobs for job_title.
-
-    Fresh cache hit (within CACHE_TTL_HOURS): return immediately.
-    Cache miss / stale / refresh: trigger Trigger.dev (task upserts to Supabase)
-    and return status=scraping so the client can poll. Fits Vercel Hobby 10s limit.
-
-    Use ``poll=true`` while waiting so each poll does not start another scrape.
-    """
+    """Return jobs for job_title (cache + Trigger scrape)."""
     query = job_title.strip()
     if not query:
         raise HTTPException(status_code=422, detail="job_title must not be empty")
@@ -195,6 +177,53 @@ def get_jobs(
         run_id=run_id,
         message=message,
         jobs=[JobOut(**_normalize_job(row)) for row in existing],
+    )
+
+
+@app.post("/v1/match-cv", response_model=MatchCvResponse)
+@app.post("/api/v1/match-cv", response_model=MatchCvResponse)
+async def match_cv(file: UploadFile = File(...)) -> MatchCvResponse:
+    """
+    Drop in a CV → parse → LLM titles → live jobs → ranked shortlist with reasons.
+    Requires OPENROUTER_API_KEY.
+    """
+    filename = file.filename or "cv.pdf"
+    content_type = file.content_type or "application/octet-stream"
+    content = await file.read()
+
+    try:
+        result = match_cv_bytes(
+            filename=filename,
+            content=content,
+            content_type=content_type,
+        )
+    except CvParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OpenRouterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Match failed: {exc}") from exc
+
+    matches_out: list[RankedMatch] = []
+    for m in result.get("matches") or []:
+        job = m.get("job") or {}
+        matches_out.append(
+            RankedMatch(
+                score=float(m.get("score") or 0),
+                reason=str(m.get("reason") or ""),
+                job=JobOut(**_normalize_job(job)),
+            )
+        )
+
+    profile = result.get("profile") or {}
+    return MatchCvResponse(
+        status=str(result.get("status") or "ready"),
+        message=result.get("message"),
+        profile=CandidateProfile(**profile),
+        titles=list(result.get("titles") or []),
+        run_ids=list(result.get("run_ids") or []),
+        cv_upload_id=str(result["cv_upload_id"]) if result.get("cv_upload_id") else None,
+        matches=matches_out,
     )
 
 

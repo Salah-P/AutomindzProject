@@ -10,6 +10,10 @@ Browser (public/) → FastAPI app.main (Vercel)
   → miss / stale / refresh → Trigger.dev scrape-jobs
        → python trigger/scraper/run.py → upsert jobs (unique job_url)
   → UI polls ?poll=true until ready
+
+CV match:
+  Upload PDF/DOCX → parse → OpenRouter (profile + titles)
+    → scrape/cache jobs per title → OpenRouter score/rank → UI
 ```
 
 Board: WeWorkRemotely programming RSS + detail pages.

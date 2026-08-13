@@ -11,7 +11,7 @@
       <header class="brand">
         <p class="logo">Automindz</p>
         <h1>Remote programming jobs</h1>
-        <p class="lede">Search WeWorkRemotely by job title.</p>
+        <p class="lede">Search WeWorkRemotely by title — or drop in a CV for ranked matches.</p>
       </header>
 
       <form id="search-form" class="search">
@@ -29,10 +29,33 @@
         </div>
       </form>
 
+      <section class="cv-upload" aria-labelledby="cv-heading">
+        <h2 id="cv-heading">Match from CV</h2>
+        <p class="lede cv-lede">
+          Upload a PDF or DOCX. We parse your profile, suggest titles, pull live jobs, and rank them.
+        </p>
+        <form id="cv-form" class="cv-form">
+          <label class="file-label" for="cv-file">
+            <span>Choose CV</span>
+            <input
+              id="cv-file"
+              name="file"
+              type="file"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              required
+            />
+          </label>
+          <button type="submit" class="btn-secondary" id="cv-submit">Upload &amp; match</button>
+        </form>
+        <p id="cv-file-name" class="meta" aria-live="polite"></p>
+        <p id="cv-status" class="status" aria-live="polite"></p>
+        <div id="cv-profile" class="cv-profile" hidden></div>
+      </section>
+
       <p id="status" class="status" aria-live="polite"></p>
       <section id="results" class="results" aria-live="polite"></section>
     </main>
-    <script src="./app.js?v=20260811c" type="module"></script>
+    <script src="./app.js?v=20260813a" type="module"></script>
     <!-- Vercel Web Analytics (enable in project → Analytics, then redeploy) -->
     <script>
       window.va =

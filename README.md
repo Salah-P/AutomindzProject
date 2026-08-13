@@ -77,6 +77,18 @@ Copy `.env.example` → `.env` at the repo root (used by FastAPI locally). Trigg
 | `PYTHON_BIN` | Trigger (local) | `python` on Windows if `python3` is missing |
 | `AUTOMINDZ_ROOT` | Trigger (local) | Monorepo root so the task can find `scraper/` |
 | `CACHE_TTL_HOURS` | API | Re-scrape when cache for a query is older than this (default `24`) |
+| `OPENROUTER_API_KEY` | API | Required for **Match from CV** (`POST /v1/match-cv`) |
+| `OPENROUTER_MODEL` | API | OpenRouter model id (default `openai/gpt-4o-mini`) |
+| `MATCH_SCRAPE_WAIT_SECONDS` | API | Brief wait for scrapes during CV match (default `8`) |
+
+### CV match flow
+
+1. Upload PDF/DOCX via the UI (`POST /v1/match-cv`).
+2. API extracts text → OpenRouter builds a profile + search titles.
+3. For each title, jobs are loaded from Supabase (Trigger scrape kicked if cache miss/stale).
+4. OpenRouter scores each job and returns a ranked shortlist with reasons.
+
+Apply the latest `supabase/schema.sql` (adds `cv_uploads` + Storage bucket `cvs`) in the Supabase SQL editor before relying on upload persistence.
 
 Vercel Production should use **`tr_prod_…`**. Local `.env` should stay on **`tr_dev_…`** so the API talks to `trigger.dev dev`, not cloud.
 

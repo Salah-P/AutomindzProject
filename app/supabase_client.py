@@ -77,3 +77,50 @@ def count_jobs_by_query(search_query: str, *, client: Client | None = None) -> i
     if result.count is not None:
         return int(result.count)
     return len(result.data or [])
+
+
+CV_BUCKET = os.getenv("SUPABASE_CV_BUCKET", "cvs")
+
+
+def upload_cv(
+    *,
+    filename: str,
+    content: bytes,
+    content_type: str,
+    client: Client | None = None,
+) -> dict[str, Any]:
+    """
+    Store a CV in the ``cvs`` Storage bucket and insert a ``cv_uploads`` row.
+    Returns the inserted metadata row.
+    """
+    import re
+    import uuid
+
+    if not content:
+        raise ValueError("Empty file")
+
+    safe_name = Path(filename).name.strip() or "cv"
+    safe_name = re.sub(r"[^\w.\-]+", "_", safe_name)[:180]
+    storage_path = f"{uuid.uuid4().hex}_{safe_name}"
+
+    sb = client or get_client()
+    sb.storage.from_(CV_BUCKET).upload(
+        storage_path,
+        content,
+        file_options={
+            "content-type": content_type or "application/octet-stream",
+            "upsert": "false",
+        },
+    )
+
+    row = {
+        "original_filename": Path(filename).name.strip() or safe_name,
+        "storage_path": storage_path,
+        "content_type": content_type or "application/octet-stream",
+        "size_bytes": len(content),
+    }
+    result = sb.table("cv_uploads").insert(row).execute()
+    data = (result.data or [None])[0]
+    if not data:
+        raise RuntimeError("CV metadata insert returned no row")
+    return data
