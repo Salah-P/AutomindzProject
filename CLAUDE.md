@@ -12,8 +12,8 @@ Browser (public/) → FastAPI app.main (Vercel)
   → UI polls ?poll=true until ready
 
 CV match:
-  Upload PDF/DOCX → parse → OpenRouter (profile + titles)
-    → scrape/cache jobs per title → OpenRouter score/rank → UI
+  Upload PDF/DOCX → parse → Hugging Face LLM (profile + titles)
+    → scrape/cache jobs per title → LLM score/rank → UI
 ```
 
 Board: WeWorkRemotely programming RSS + detail pages.
