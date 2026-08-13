@@ -1,4 +1,4 @@
-"""Hugging Face Inference (OpenAI-compatible) client for CV matching."""
+"""LLM client for CV matching (Ollama local by default, optional Hugging Face)."""
 
 from __future__ import annotations
 
@@ -9,19 +9,29 @@ from typing import Any
 
 from openai import OpenAI
 
-HF_BASE_URL = os.getenv("HF_BASE_URL", "https://router.huggingface.co/v1")
-DEFAULT_MODEL = "moonshotai/Kimi-K3:together"
+DEFAULT_OLLAMA_BASE = "http://127.0.0.1:11434/v1"
+DEFAULT_OLLAMA_MODEL = "llama3:latest"
+DEFAULT_HF_BASE = "https://router.huggingface.co/v1"
+DEFAULT_HF_MODEL = "moonshotai/Kimi-K3:together"
 
 
 class LlmError(RuntimeError):
-    """Raised when the Hugging Face / LLM call fails."""
+    """Raised when the LLM call fails."""
 
 
 # Back-compat for imports that still say OpenRouterError
 OpenRouterError = LlmError
 
 
+def _provider() -> str:
+    return (os.getenv("LLM_PROVIDER") or "ollama").strip().lower()
+
+
 def _api_key() -> str:
+    provider = _provider()
+    if provider == "ollama":
+        # Ollama ignores the key but the OpenAI client requires a non-empty value.
+        return os.getenv("OLLAMA_API_KEY", "ollama").strip() or "ollama"
     key = (
         os.getenv("HF_TOKEN", "").strip()
         or os.getenv("HUGGINGFACE_HUB_TOKEN", "").strip()
@@ -33,16 +43,36 @@ def _api_key() -> str:
 
 
 def _model() -> str:
+    provider = _provider()
+    if provider == "ollama":
+        return (
+            os.getenv("OLLAMA_MODEL", "").strip()
+            or os.getenv("HF_MODEL", "").strip()
+            or DEFAULT_OLLAMA_MODEL
+        )
     return (
         os.getenv("HF_MODEL", "").strip()
         or os.getenv("OPENROUTER_MODEL", "").strip()
-        or DEFAULT_MODEL
+        or DEFAULT_HF_MODEL
     )
 
 
-def _client(*, timeout: float = 90.0) -> OpenAI:
+def _base_url() -> str:
+    provider = _provider()
+    if provider == "ollama":
+        return (
+            os.getenv("OLLAMA_BASE_URL", "").strip()
+            or DEFAULT_OLLAMA_BASE
+        )
+    return (
+        os.getenv("HF_BASE_URL", "").strip()
+        or DEFAULT_HF_BASE
+    )
+
+
+def _client(*, timeout: float = 180.0) -> OpenAI:
     return OpenAI(
-        base_url=HF_BASE_URL,
+        base_url=_base_url(),
         api_key=_api_key(),
         timeout=timeout,
     )
@@ -53,10 +83,10 @@ def chat_json(
     system: str,
     user: str,
     temperature: float = 0.2,
-    timeout: float = 90.0,
+    timeout: float = 180.0,
 ) -> Any:
     """
-    Chat completion via Hugging Face router; parse JSON from the reply.
+    Chat completion via configured provider; parse JSON from the reply.
     """
     last_err: Exception | None = None
     for attempt in range(2):
@@ -76,7 +106,7 @@ def chat_json(
                 ],
             )
         except Exception as exc:  # noqa: BLE001
-            last_err = LlmError(f"Hugging Face chat failed: {exc}")
+            last_err = LlmError(f"LLM chat failed ({_provider()}/{_model()}): {exc}")
             continue
 
         content = _message_text(completion)
@@ -89,7 +119,7 @@ def chat_json(
             last_err = exc
             continue
 
-    raise last_err or LlmError("Hugging Face chat failed")
+    raise last_err or LlmError("LLM chat failed")
 
 
 def _message_text(completion: Any) -> str:

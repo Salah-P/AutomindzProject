@@ -63,14 +63,19 @@ function jobArticle(job, { score, reason } = {}) {
   const article = document.createElement("article");
   article.className = "job";
   const scoreHtml =
-    score != null
-      ? `<span class="score">${escapeHtml(String(Math.round(score)))}/100</span>`
+    score != null && score !== ""
+      ? `<span class="score-badge" aria-label="Match score">${escapeHtml(
+          String(Math.round(Number(score))),
+        )}<small>/100</small></span>`
       : "";
   const reasonHtml = reason
-    ? `<p class="reason">${escapeHtml(reason)}</p>`
+    ? `<p class="reason"><strong>Why:</strong> ${escapeHtml(reason)}</p>`
     : "";
   article.innerHTML = `
-      <h2>${escapeHtml(job.job_title)}${scoreHtml}</h2>
+      <div class="job-head">
+        <h2>${escapeHtml(job.job_title)}</h2>
+        ${scoreHtml}
+      </div>
       <p class="meta">
         ${escapeHtml(job.company_name)}
         ·
@@ -321,73 +326,93 @@ cvForm?.addEventListener("submit", async (event) => {
 
   if (cvSubmit) cvSubmit.disabled = true;
   setCvStatus("Parsing CV and matching jobs… this can take a bit.");
+  // Keep search status clear so Trigger scrape polling text is not shown for CV match.
   setStatus("");
   resultsEl.innerHTML = "";
   renderProfile(null, []);
 
   try {
-    const paths = ["/v1/match-cv", "/api/v1/match-cv"];
-    let lastError = null;
-    let data = null;
-
-    for (const path of paths) {
-      const url = new URL(path, API_BASE);
-      const body = new FormData();
-      body.append("file", file, file.name);
-      try {
-        const res = await fetch(url, { method: "POST", body });
-        const text = await res.text();
-        let parsed = {};
-        try {
-          parsed = text ? JSON.parse(text) : {};
-        } catch {
-          parsed = { detail: text.slice(0, 300) };
-        }
-        if (res.status === 404 && path === paths[0]) {
-          lastError = new Error(`HTTP 404 at ${url.pathname}`);
-          continue;
-        }
-        if (!res.ok) {
-          const detail = parsed.detail || res.statusText || "Request failed";
-          const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
-          throw new Error(`HTTP ${res.status}: ${msg}`);
-        }
-        data = parsed;
-        break;
-      } catch (err) {
-        lastError = err;
-        if (path === paths[0] && String(err.message || err).includes("404")) {
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    if (!data) throw lastError || new Error("Match request failed");
-
+    let data = await postMatchCv(file);
     renderProfile(data.profile, data.titles || []);
     setCvStatus(data.message || `Status: ${data.status}`);
 
+    // If scrapes were just kicked, retry a few times until we can score.
+    if (data.status === "scraping" || !data.matches?.length) {
+      setStatus("Waiting for live jobs, then scoring against your CV…");
+      for (let i = 1; i <= 8; i++) {
+        setCvStatus(`Waiting for jobs to land (${i * 8}s), then scoring…`);
+        await sleep(8000);
+        data = await postMatchCv(file);
+        renderProfile(data.profile, data.titles || []);
+        if (data.status === "ready" && data.matches?.length) break;
+      }
+    }
+
     if (data.status === "ready" && data.matches?.length) {
+      setCvStatus(data.message || `Scored ${data.matches.length} job(s).`);
       setStatus(
         `Scored ${data.matches.length} job(s) against your CV (highest first).`,
       );
       renderMatches(data.matches);
-    } else if (data.status === "scraping") {
-      setStatus(
-        "Live scrapes started for your suggested titles — try Upload & match again shortly to get scores.",
+    } else {
+      setCvStatus(
+        data.message ||
+          "Still no jobs to score. Search one suggested title, wait, then Upload & match again.",
+        true,
       );
+      setStatus("");
       renderMatches([], {
         emptyMessage:
-          "No jobs to score yet. Wait for scrapes, then upload again for ranked matches.",
+          "No scored matches yet. Wait for scrapes or search a suggested title, then upload again.",
       });
-    } else {
-      setStatus("No scored matches returned.");
-      renderMatches([], { emptyMessage: "No scored matches returned." });
     }
   } catch (err) {
     setCvStatus(String(err.message || err), true);
+    setStatus("");
   } finally {
     if (cvSubmit) cvSubmit.disabled = false;
   }
 });
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function postMatchCv(file) {
+  const paths = ["/v1/match-cv", "/api/v1/match-cv"];
+  let lastError = null;
+
+  for (const path of paths) {
+    const url = new URL(path, API_BASE);
+    const body = new FormData();
+    body.append("file", file, file.name);
+    try {
+      const res = await fetch(url, { method: "POST", body });
+      const text = await res.text();
+      let parsed = {};
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = { detail: text.slice(0, 300) };
+      }
+      if (res.status === 404 && path === paths[0]) {
+        lastError = new Error(`HTTP 404 at ${url.pathname}`);
+        continue;
+      }
+      if (!res.ok) {
+        const detail = parsed.detail || res.statusText || "Request failed";
+        const msg = typeof detail === "string" ? detail : JSON.stringify(detail);
+        throw new Error(`HTTP ${res.status}: ${msg}`);
+      }
+      return parsed;
+    } catch (err) {
+      lastError = err;
+      if (path === paths[0] && String(err.message || err).includes("404")) {
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError || new Error("Match request failed");
+}

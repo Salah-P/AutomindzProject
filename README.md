@@ -77,18 +77,20 @@ Copy `.env.example` → `.env` at the repo root (used by FastAPI locally). Trigg
 | `PYTHON_BIN` | Trigger (local) | `python` on Windows if `python3` is missing |
 | `AUTOMINDZ_ROOT` | Trigger (local) | Monorepo root so the task can find `scraper/` |
 | `CACHE_TTL_HOURS` | API | Re-scrape when cache for a query is older than this (default `24`) |
-| `OPENROUTER_API_KEY` | API | Deprecated alias — prefer `HF_TOKEN` |
-| `HF_TOKEN` | API | Hugging Face token for **Match from CV** |
-| `HF_MODEL` | API | Default `moonshotai/Kimi-K3:together` |
+| `HF_TOKEN` | API | Hugging Face token when `LLM_PROVIDER=hf` |
+| `HF_MODEL` | API | HF model id |
 | `HF_BASE_URL` | API | Default `https://router.huggingface.co/v1` |
+| `LLM_PROVIDER` | API | `ollama` (default, local) or `hf` |
+| `OLLAMA_BASE_URL` | API | Default `http://127.0.0.1:11434/v1` |
+| `OLLAMA_MODEL` | API | Default `llama3:latest` (also have mistral/phi3/gemma4) |
 | `MATCH_SCRAPE_WAIT_SECONDS` | API | Brief wait for scrapes during CV match (default `8`) |
 
 ### CV match flow
 
 1. Upload PDF/DOCX via the UI (`POST /v1/match-cv`).
-2. API extracts text → Hugging Face LLM builds a profile + search titles.
+2. API extracts text → local **Ollama** (or HF) builds a profile + search titles.
 3. For each title, jobs are loaded from Supabase (Trigger scrape kicked if cache miss/stale).
-4. LLM scores each job and returns a ranked shortlist with reasons.
+4. LLM scores each job and returns a ranked shortlist with reasons (score badge in UI).
 
 Apply the latest `supabase/schema.sql` (adds `cv_uploads` + Storage bucket `cvs`) in the Supabase SQL editor before relying on upload persistence.
 
